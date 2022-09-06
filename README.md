@@ -27,3 +27,5 @@ The static/dyn libraries are probably better for debugging, and for full install
 
 ## Notes:
 * You need *tcc* (Fabrice Bellard tiny C runtime) to build sc.h. If you don't know about *tcc*, you should!
+
+![sc_cpu](doc/sc_cpu.gif)
