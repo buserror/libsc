@@ -42,11 +42,7 @@ void
 sc_win_clear(
 	sc_win_t *s )
 {
-	for (int i = 0; i < s->line.count; i++)
-		sc_line_free(&s->line.e[i]);
-	sc_lines_free(&s->line);
-	s->style.raw = 0;
-	s->c_x = s->c_y = 0;
+	sc_draw_clear(&s->draw);
 }
 
 void
@@ -55,7 +51,7 @@ sc_win_dirty(
 {
 	sc_win_t *p = s;
 	do {
-		p->dirty = 1;
+		sc_draw_dirty(&p->draw);
 		p = p->parent;
 	} while(p);
 }
@@ -71,10 +67,7 @@ sc_win_dispose(
 	while ((sb = TAILQ_FIRST(&s->sub)) != NULL) {
 		sc_win_dispose(sb);
 	}
-
-	for (int li = 0; li < s->line.count; li++)
-		sc_line_free(&s->line.e[li]);
-	sc_lines_free(&s->line);
+	sc_draw_dispose(&s->draw);
 	if (s->driver && s->driver->free)
 		s->driver->free(s);
 	// don't delete detached/main screen
@@ -104,18 +97,18 @@ sc_win_set(
 
 void
 sc_win_goto(
-	sc_win_t *s, int x, int y)
+	sc_win_t *s,
+	int x, int y)
 {
-	if (x >= 0)
-		s->c_x = x;
-	if (y >= 0)
-		s->c_y = y;
+	sc_draw_goto(&s->draw, x, y);
 }
 
 
 //#ifdef DEBUG
 void
-sc_win_dump(sc_win_t *s) {
+sc_draw_dump(
+		sc_draw_t *s)
+{
 	for (int y = 0; y < s->line.count; y++) {
 		sc_line_t * l = &s->line.e[y];
 		for (int x = 0; x < l->count; x++)

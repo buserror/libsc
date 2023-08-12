@@ -31,7 +31,7 @@ DECLARE_C_ARRAY(s_core_t*, thread, 2);
 typedef struct s_phy_t {
 	char * model;
 	int phy : 4;
-	int coretemp;
+	int coretemp_fd;
 	char temp_label[16];
 	core_t core;
 } s_phy_t;
@@ -74,6 +74,7 @@ static int open_sys_file(
 
 int main(int argc, const char *argv[])
 {
+	int sort = 0;	// sort CPU per usage
 	char buf[8192];
 	phy_t p = {};
 	thread_t cpu = {};
@@ -85,7 +86,8 @@ int main(int argc, const char *argv[])
 			fprintf(stderr, "%s: --help\n", argv[0]);
 			fprintf(stderr, "	version %s\n", BUILT);
 			exit(0);
-		}
+		} else if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--sort"))
+			sort++;
 	}
 	{	// map the threads numbers back to processor/core and make a table
 		s_phy_t *c_p = NULL;
@@ -147,7 +149,7 @@ int main(int argc, const char *argv[])
 				if (strncmp(buf, "Package id ", 11)) continue;
 				int pi = atoi(buf+11);
 				if (pi < p.count) {
-					p.e[pi].coretemp = open_sys_file(
+					p.e[pi].coretemp_fd = open_sys_file(
 						g.gl_pathv[i], "temp1_input", 1, buf, sizeof(buf));
 				//	printf("coretemp fd %d current %s\n", p.e[pi].coretemp, buf);
 				}
@@ -198,9 +200,9 @@ int main(int argc, const char *argv[])
 			set_title++;
 		}
 		if (!(ticks & 7)) {	// read temperatures every 2 seconds
-			for (int pi = 0; pi < p.count; pi++) if (p.e[pi].coretemp) {
+			for (int pi = 0; pi < p.count; pi++) if (p.e[pi].coretemp_fd) {
 				char b[32];
-				read_sys_file(p.e[pi].coretemp, b, sizeof(b));
+				read_sys_file(p.e[pi].coretemp_fd, b, sizeof(b));
 				int c = (atoi(b) + 500) / 1000;
 				sprintf(p.e[pi].temp_label, "%dC", c);
 			}
@@ -220,8 +222,10 @@ int main(int argc, const char *argv[])
 		read_sys_file(fd, buf, sizeof(buf));// read /proc/stats
 
 		const int colors[] = { 0, 17, 53, 89, 125, 161, 197 };
+
 		for (int ci = 0; ci < cpu.count; ci++)
 			cpu.e[ci]->awake = 0;
+		read_sys_file(fd, buf, sizeof(buf));// read /proc/stats
 		char *sep = buf;
 		char *line;
 		while ((line = strsep(&sep, "\n")) != NULL) {
@@ -259,7 +263,7 @@ int main(int argc, const char *argv[])
 				for (int y = 1; y <= th_height; y++) {
 					int py = 100 - ((y * 100) / th_height);
 
-					sc_glyph_t *g = sc_store_xy(chart, NULL, bx, y-1);
+					sc_glyph_t *g = sc_draw_store_xy(&chart->draw, NULL, bx, y-1);
 					//	g->g = 0;
 					if (py <= t->usage) {
 						if (!t->awake)
@@ -290,7 +294,7 @@ int main(int argc, const char *argv[])
 						}
 					}
 					if (g) for (int x = 1; x < th_width; x++)
-						*(sc_store_xy(chart, NULL, bx + x, y - 1)) = *g;
+						*(sc_draw_store_xy(&chart->draw, NULL, bx + x, y - 1)) = *g;
 				}
 				bx += th_width + th_spacer;
 			}

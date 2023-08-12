@@ -43,9 +43,9 @@ _sc_render_subs(
 	sc_win_t *s,
 	int force)
 {
-	if (!s->dirty)
+	if (!s->draw.dirty)
 		return;
-	s->dirty = 0;
+	s->draw.dirty = 0;
 	sc_win_t *sb;
 	TAILQ_FOREACH_REVERSE(sb, &s->sub, sub, self) {
 		_sc_render_subs(sb, 0);
@@ -55,12 +55,13 @@ _sc_render_subs(
 	if (s->driver && s->driver->draw)
 		s->driver->draw(s);
 
+	sc_draw_t *d = &s->draw;
 	for (int y = 0; y < s->h; y++) {
 		int dy = s->y + y;
 		if (dy < 0 || dy >= s->parent->h)
 			continue;
-		if (y < s->line.count) {	// non-empty line
-			sc_line_t * l = &s->line.e[y];
+		if (y < d->line.count) {	// non-empty line
+			sc_line_t * l = &d->line.e[y];
 			int dx = s->x, sx = 0;
 			#if 0
 			int leading = 0;// count leading spaces, for center/right justify
@@ -68,7 +69,7 @@ _sc_render_subs(
 				if (l->e[i].g == 0 || l->e[i].g == ' ')
 					leading++;
 			#endif
-			switch (s->justify) {
+			switch (d->justify) {
 				case SC_WIN_JUSTIFY_CENTER:
 					if (l->count > s->w)
 						sx = (l->count - s->w) / 2;
@@ -87,22 +88,20 @@ _sc_render_subs(
 			}
 
 			for (; dx < (s->x + s->w) && sx < l->count; sx++, dx++) {
-				//	int dx = s->x + x;
 				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_store_xy(s->parent, &l->e[sx], dx, dy);
+					sc_draw_store_xy(&s->parent->draw, &l->e[sx], dx, dy);
 				}
 			}
 			for (; dx < (s->x + s->w); dx++) {
-				//	int dx = s->x + x;
 				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_store_xy(s->parent, NULL, dx, dy);
+					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
 				}
 			}
 		} else {	// empty line, clear it.
 			for (int x = 0; x < s->w; x++) {
 				int dx = s->x + x;
 				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_store_xy(s->parent, NULL, dx, dy);
+					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
 				}
 			}
 		}
@@ -137,26 +136,32 @@ _sc_render_flush_style(
 	if (n.invert != o.invert)
 		sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", n.invert ? 7 : 27);
 	if (n.fore != o.fore) {
-		if (n.fore < 8)
+		if (!n.has_fore)
+			sc_buf_printf(&seq, "%s0", c++ > 0 ? ";" : "");
+		else if (n.fore < 8)
 			sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", 30 + n.fore);
 		else
 			sc_buf_printf(&seq, "%s38;5;%d", c++ > 0 ? ";" : "", n.fore);
 	}
 	if (n.back != o.back) {
-		if (n.back < 8)
-			sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", 40 + n.fore);
+		if (!n.has_back)
+			sc_buf_printf(&seq, "%s0", c++ > 0 ? ";" : "");
+		else if (n.back < 8)
+			sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", 40 + n.back);
 		else
-			sc_buf_printf(&seq, "%s48;5;%d", c++ > 0 ? ";" : "", n.fore);
+			sc_buf_printf(&seq, "%s48;5;%d", c++ > 0 ? ";" : "", n.back);
 	}
 	if (!c)
 		sc_buf_add(&seq, '0');
 	sc_buf_add(&seq, 'm');
 #if 0
-	printf("  %d bytes seq: ", seq.count);
-	for (int i = 0; i < seq.count; i++)
+	printf("     Insert offset %d, %d bytes seq: ",
+		   sc->render.style_insert, seq.count);
+	for (int i = 0; i < seq.count; i++) {
 		if (seq.e[i] < ' ')
 			printf("%02x", seq.e[i]);
-	else printf("%c", seq.e[i]);
+		else printf("%c", seq.e[i]);
+	}
 	printf("\n");
 #endif
 	sc_buf_insert(out, sc->render.style_insert, seq.e, seq.count);
@@ -186,9 +191,6 @@ _sc_render_glyph(
 {
 	sc_glyph_t *g = &l->e[x];
 
-	// if we had a space run, and find something else, flush spaces.
-	if (g->g && g->g != ' ')
-		_sc_render_flush_space(sc, o);
 	/*
 	 * Count the characters we output with the same style. If the style change,
 	 * go back and insert the style setting sequence at the last point we
@@ -199,9 +201,11 @@ _sc_render_glyph(
 		_sc_render_flush_style(sc, o);
 		// next insert point for a style change
 		sc->render.style_insert = o->count;
+		sc->render.style_count = 1;
 		sc->render.style.raw = g->style.raw;
 	} else
 		sc->render.style_count++;
+	// if we had a space run, and find something else, flush spaces.
 	switch (g->g) {
 		/*
 		 * We count space, don't store them; if a run is bigger than 5,
@@ -210,16 +214,18 @@ _sc_render_glyph(
 		 */
 		case 0: // default/space
 		case ' ':
-			sc->render.space_count ++;
+			sc->render.space_count++;
 			break;
-		default:
+		default: {
+			if (sc->render.space_count)
+				_sc_render_flush_space(sc, o);
 			if (g->g > 0x7f) {
 				char ut[8];
 				int len = _sc_render_utf8_glyph(ut, g->g) - ut;
 				sc_buf_concat(o, (uint8_t*)ut, len);
 			} else
 				sc_buf_add(o, g->g);
-		break;
+		}	break;
 	}
 }
 
@@ -263,9 +269,10 @@ sc_render(
 					  sc->output.lines, sc->screen.w, sc->screen.h);
 	}
 #endif
+	sc_draw_t *d = &s->draw;
 	sc->output.lines = 0;
-	for (int y = 0; y < s->line.count; y++) {
-		sc_line_t * l = &s->line.e[y];
+	for (int y = 0; y < d->line.count; y++) {
+		sc_line_t * l = &d->line.e[y];
 		_sc_render_line(sc, s, &sc->output, l);
 		sc_buf_push(&sc->output, '\n');
 		sc->output.lines++;

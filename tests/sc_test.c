@@ -18,19 +18,19 @@ int main()
 	sc_win_t * main = sc_win_get(NULL);
 	{
 		sc_win_t * box = sc_box(NULL, 15, 1, 18, 4, 0);
-		box->justify = SC_WIN_JUSTIFY_RIGHT;
+		box->draw.justify = SC_WIN_JUSTIFY_RIGHT;
 		sc_printf(NULL, "Hello There\n\033[38;5;14mAnother Line\n");
 		sc_win_set(NULL, main);
 	}
 	{
 		sc_win_t * box = sc_box(NULL, 20, 4, 25, 3, SC_BOX_ROUND);
-		box->justify = SC_WIN_JUSTIFY_CENTER;
+		box->draw.justify = SC_WIN_JUSTIFY_CENTER;
 		sc_printf(NULL, "Testing \033[1mOne \033[22;7m Two \033[0m");
 		sc_win_set(NULL, main);
 	}
 	sc_win_t * update = sc_box(NULL, 50, 1, 30, 4, 0);
 	sc_printf(NULL, "Press a key (Q to quit)");
-	if (0) { // test for consecutive block of same colour, currently buggy
+	if (1) { // test for consecutive block of same colour
 		sc_win_goto(update, 1, 1);
 		sc_printf(NULL, "\033[48;5;161mAbc\033[0m");
 		sc_win_goto(update, 5, 1);
@@ -44,7 +44,7 @@ int main()
 		FILE *o = fopen("dump.bin", "wb");
 		fwrite(sc->output.e, sc->output.count, 1, o);
 		fclose(o);
-		sc_win_dump(update);
+		sc_draw_dump(&update->draw);
 		exit(0);
 	}
 	int done = 0;
@@ -58,7 +58,7 @@ int main()
 				continue;
 		}
 		sc_win_clear(update);
-		sc_printf(NULL, "Key '%x' was pressed\n", k);
+		sc_printf(NULL, "Key '%x' was pressed\r", k);
 		sc_render(NULL, 0);
 	} while (!done);
 	sc_dispose(NULL);

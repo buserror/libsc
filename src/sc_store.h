@@ -24,13 +24,13 @@ sc_printf(
  * If 'g' is NULL, return the address of the glyph in that window,
  * allowing changing the glyph on the fly */
 sc_glyph_t *
-sc_store_xy(
-	sc_win_t *s,
+sc_draw_store_xy(
+	sc_draw_t *s,
 	const sc_glyph_t *g,
 	int x, int y);
 /* static */ int
-_sc_add_store(
-	sc_win_t *s,
+_sc_draw_add_store(
+	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags);
 

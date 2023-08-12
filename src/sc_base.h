@@ -54,20 +54,24 @@ typedef struct sc_win_driver_t {
 	void (*free)(struct sc_win_t *);
 } sc_win_driver_t;
 
-typedef struct sc_win_t {
-	struct sc_t * 				sc;
-	struct sc_win_t * 			parent;
-	TAILQ_HEAD(sub,sc_win_t)	sub;
+typedef struct sc_draw_t {
 	unsigned int 				dirty : 1,
 								justify: 2,	// SC_WIN_JUSTIFY_*
 								kind : 8,	// for custom windows/boxes
 								draw_style : 4;	// for draw_cb
-	uint8_t 					x,y,w,h;	// position in parent window, size
-	sc_win_driver_t const *		driver;
 	uint8_t 					c_x, c_y;	// current cursor position
 	sc_style_t 					style; 		// current style
-	TAILQ_ENTRY(sc_win_t)		self;
 	sc_lines_t 					line;
+} sc_draw_t;
+
+typedef struct sc_win_t {
+	sc_draw_t					draw;
+	struct sc_t * 				sc;
+	struct sc_win_t * 			parent;
+	TAILQ_HEAD(sub,sc_win_t)	sub;
+	sc_win_driver_t const *		driver;
+	TAILQ_ENTRY(sc_win_t)		self;
+	uint8_t 					x,y,w,h;	// position in parent window, size
 } sc_win_t;
 
 #include "sc_buf.h"
@@ -98,7 +102,7 @@ typedef struct sc_t {
 	} 				render;
 } sc_t;
 
-/* Create a new sc instance. This is recommended before you do anthing,
+/* Create a new sc instance. This is recommended before you do anything,
  * but it is currently mostly optional as one will get created anyway */
 sc_t *
 sc_new(
@@ -117,6 +121,7 @@ sc_getch(
 	sc_t * sc,
 	unsigned int timeout_ms);
 
+#include "sc_draw.h"
 #include "sc_store.h"
 #include "sc_render.h"
 #include "sc_win.h"
@@ -145,6 +150,7 @@ IMPLEMENT_C_ARRAY(sc_buf);
 #include "minipt.h"
 #include "sc_buf.c"
 #include "sc_store.c"
+#include "sc_draw.c"
 #include "sc_box.c"
 #include "sc_render.c"
 #include "sc_win.c"

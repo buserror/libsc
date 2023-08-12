@@ -205,20 +205,24 @@ typedef struct sc_win_driver_t {
 	void (*free)(struct sc_win_t *);
 } sc_win_driver_t;
 
-typedef struct sc_win_t {
-	struct sc_t * 				sc;
-	struct sc_win_t * 			parent;
-	TAILQ_HEAD(sub,sc_win_t)	sub;
+typedef struct sc_draw_t {
 	unsigned int 				dirty : 1,
 								justify: 2,	// SC_WIN_JUSTIFY_*
 								kind : 8,	// for custom windows/boxes
 								draw_style : 4;	// for draw_cb
-	uint8_t 					x,y,w,h;	// position in parent window, size
-	sc_win_driver_t const *		driver;
 	uint8_t 					c_x, c_y;	// current cursor position
 	sc_style_t 					style; 		// current style
-	TAILQ_ENTRY(sc_win_t)		self;
 	sc_lines_t 					line;
+} sc_draw_t;
+
+typedef struct sc_win_t {
+	sc_draw_t					draw;
+	struct sc_t * 				sc;
+	struct sc_win_t * 			parent;
+	TAILQ_HEAD(sub,sc_win_t)	sub;
+	sc_win_driver_t const *		driver;
+	TAILQ_ENTRY(sc_win_t)		self;
+	uint8_t 					x,y,w,h;	// position in parent window, size
 } sc_win_t;
 
 // #include "sc_buf.h"
@@ -273,7 +277,7 @@ typedef struct sc_t {
 	} 				render;
 } sc_t;
 
-/* Create a new sc instance. This is recommended before you do anthing,
+/* Create a new sc instance. This is recommended before you do anything,
  * but it is currently mostly optional as one will get created anyway */
 sc_t *
 sc_new(
@@ -292,6 +296,23 @@ sc_getch(
 	sc_t * sc,
 	unsigned int timeout_ms);
 
+// #include "sc_draw.h"
+void
+sc_draw_clear(
+		struct sc_draw_t * s);
+
+void
+sc_draw_dirty(
+		struct sc_draw_t * s);
+
+void
+sc_draw_goto(
+		struct sc_draw_t *s,
+		int x, int y);
+
+void
+sc_draw_dispose(
+		struct sc_draw_t *s);
 // #include "sc_store.h"
 int
 sc_add(
@@ -309,13 +330,13 @@ sc_printf(
  * If 'g' is NULL, return the address of the glyph in that window,
  * allowing changing the glyph on the fly */
 sc_glyph_t *
-sc_store_xy(
-	sc_win_t *s,
+sc_draw_store_xy(
+	sc_draw_t *s,
 	const sc_glyph_t *g,
 	int x, int y);
 /* static */ int
-_sc_add_store(
-	sc_win_t *s,
+_sc_draw_add_store(
+	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags);
 
@@ -594,8 +615,8 @@ enum {
 };
 
 sc_glyph_t *
-sc_store_xy(
-	sc_win_t *s,
+sc_draw_store_xy(
+	sc_draw_t *s,
 	const sc_glyph_t *g,
 	int x, int y)
 {
@@ -604,18 +625,27 @@ sc_store_xy(
 		sc_lines_add(&s->line, zero);
 	}
 	sc_line_t * l = &s->line.e[y];
+	const sc_glyph_t zero = {};
 	while (l->count <= x) {
-		const sc_glyph_t zero = {};
 		sc_line_add(l, zero);
 	}
-	if (g)
-		l->e[x] = *g;
+	if (g) {
+		if (l->e[x].g != g->g || l->e[x].style.raw != g->style.raw) {
+			sc_draw_dirty(s);
+			l->e[x] = *g;
+		}
+	} else {
+		if (l->e[x].g || l->e[x].style.raw) {
+			sc_draw_dirty(s);
+			l->e[x] = zero;
+		}
+	}
 	return &l->e[x];
 }
 
 int
-_sc_add_store(
-	sc_win_t *s,
+_sc_draw_add_store(
+	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags)
 {
@@ -631,7 +661,7 @@ _sc_add_store(
 	sc_glyph_t g = { .g = c, .style = s->style };
 	if (l->e[s->c_x].raw != g.raw) {
 		l->e[s->c_x] = g;
-		sc_win_dirty(s);
+		sc_draw_dirty(s);
 	}
 	if (!(flags & SC_ADD_NO_ADVANCE)) {
 		s->c_x++;
@@ -640,7 +670,7 @@ _sc_add_store(
 			s->c_y++;
 		}
 	}
-	return 0;
+	return s->dirty;
 }
 
 static void
@@ -648,23 +678,23 @@ sc_store_do_csi(
 	sc_t *sc,
 	uint8_t c)
 {
-	sc_win_t *s = sc->current;
+	sc_draw_t *s = &sc->current->draw;
 	switch (c) {
 		case 'A': { // move Y up
-			int c = 1;
+			int cl = 1;
 			if (sc->add.pcount)
-				c = sc->add.p[0];
-			if (s->c_y > c)
+				cl = sc->add.p[0];
+			if (s->c_y > cl)
 				s->c_y = 0;
 			else
-				s->c_y -= c;
+				s->c_y -= cl;
 		}	break;
 		case 'G': { // Move absolute X
-			int c = 1;
+			int cl = 1;
 			if (sc->add.pcount)
-				c = sc->add.p[0];
-			if (c) c--;	// 1 based to zero based
-			s->c_x = c;
+				cl = sc->add.p[0];
+			if (cl) cl--;	// 1 based to zero based
+			s->c_x = cl;
 		}	break;
 		case 'm': {	// style/colors
 			for (int pi = 0; pi < sc->add.pcount; pi++) {
@@ -723,6 +753,7 @@ sc_store_do_csi(
 		}	break;
 	}
 }
+
 static void
 sc_store_do_esc(
 	sc_t *sc,
@@ -753,7 +784,7 @@ sc_add_machine(
 	sc_t *sc,
 	uint8_t c)
 {
-	sc_win_t *s = sc->current;
+	sc_draw_t *s = &sc->current->draw;
 	pt_start(sc->add.pt);
 
 	switch (c) {
@@ -811,7 +842,8 @@ sc_add_machine(
 
 			} else
 #endif
-			_sc_add_store(s, c, 0);
+			if (_sc_draw_add_store(s, c, 0))
+				sc_win_dirty(sc->current);
 	}
 	pt_end(sc->add.pt);
 }
@@ -847,6 +879,45 @@ sc_printf(
 	sc_buf_free(&b);
 	return res;
 }
+// #include "sc_draw.c"
+
+void
+sc_draw_clear(
+		sc_draw_t * s)
+{
+	for (int i = 0; i < s->line.count; i++)
+		sc_line_free(&s->line.e[i]);
+	sc_lines_free(&s->line);
+	s->style.raw = 0;
+	s->c_x = s->c_y = 0;
+}
+
+void
+sc_draw_dirty(
+		sc_draw_t * s)
+{
+	s->dirty = 1;
+}
+
+void
+sc_draw_goto(
+	sc_draw_t *s,
+	int x, int y)
+{
+	if (x >= 0)
+		s->c_x = x;
+	if (y >= 0)
+		s->c_y = y;
+}
+
+void
+sc_draw_dispose(
+		sc_draw_t *s)
+{
+	for (int li = 0; li < s->line.count; li++)
+		sc_line_free(&s->line.e[li]);
+	sc_lines_free(&s->line);
+}
 // #include "sc_box.c"
 
 typedef struct sc_box_t {
@@ -870,29 +941,31 @@ static const sc_box_style_t sc_box_style[] = {
 
 static int
 _sc_box_render(
-	sc_win_t *s,
+	sc_win_t *_s,
 	const sc_box_style_t * style,
 	const int x, int y, int w, int h )
 {
 	if (w < 3 || h < 3) return -1;
 
-	sc_win_goto(s, x, y);
-	_sc_add_store(s, style->tl, 0);
+	sc_draw_t * s = &_s->draw;
+	sc_draw_goto(s, x, y);
+	_sc_draw_add_store(s, style->tl, 0);
 	for (int sx = x+1; sx < (x + w - 1); sx++)
-		_sc_add_store(s, style->h, 0);
-	_sc_add_store(s, style->tr, 0);
-	sc_win_goto(s, x, y + h-1);
-	_sc_add_store(s, style->bl, 0);
+		_sc_draw_add_store(s, style->h, 0);
+	_sc_draw_add_store(s, style->tr, 0);
+	sc_draw_goto(s, x, y + h-1);
+	_sc_draw_add_store(s, style->bl, 0);
 	for (int sx = x+1; sx < (x + w - 1); sx++)
-		_sc_add_store(s, style->h, 0);
-	_sc_add_store(s, style->br, 0);
+		_sc_draw_add_store(s, style->h, 0);
+	_sc_draw_add_store(s, style->br, 0);
 
 	for (int sy = y + 1; sy < (y + h - 1); sy++) {
-		sc_win_goto(s, x, sy);
-		_sc_add_store(s, style->v, 0);
-		sc_win_goto(s, x + w - 1, sy);
-		_sc_add_store(s, style->v, 0);
+		sc_draw_goto(s, x, sy);
+		_sc_draw_add_store(s, style->v, 0);
+		sc_draw_goto(s, x + w - 1, sy);
+		_sc_draw_add_store(s, style->v, 0);
 	}
+	sc_win_dirty(_s);
 	return 0;
 }
 
@@ -901,7 +974,7 @@ _sc_box_render_cb(
 	sc_win_t *s)
 {
 	sc_box_t * box = (sc_box_t*)s;
-	_sc_box_render(s, &sc_box_style[s->draw_style], 0, 0, s->w, s->h);
+	_sc_box_render(s, &sc_box_style[s->draw.draw_style], 0, 0, s->w, s->h);
 	if (box->title) {
 		sc_win_t *save = s->sc->current;
 		sc_win_set(s->sc, s);
@@ -943,8 +1016,8 @@ sc_box(
 	sc_win_t *s = sc_win_new(sc, parent, sizeof(sc_box_t));
 	s->x = x; s->y = y; s->w = w; s->h = h;
 	s->driver = &_driver;
-	s->draw_style = flags;
-	s->kind = SC_BOX_PLAIN;
+	s->draw.draw_style = flags;
+	s->draw.kind = SC_BOX_PLAIN;
 
 	sc_win_t *sub = sc_win_new(sc, s, 0);
 	sub->x = 1; sub->y = 1; sub->w = w - 2; sub->h = h - 2;
@@ -958,7 +1031,8 @@ sc_box_title_set(
 	sc_win_t *box_in,
 	const char *title)
 {
-	if (!box_in || !box_in->parent || box_in->parent->kind != SC_BOX_PLAIN)
+	if (!box_in || !box_in->parent ||
+			box_in->parent->draw.kind != SC_BOX_PLAIN)
 		return -1;
 	sc_box_t * box = (sc_box_t*)box_in->parent;
 
@@ -1005,9 +1079,9 @@ _sc_render_subs(
 	sc_win_t *s,
 	int force)
 {
-	if (!s->dirty)
+	if (!s->draw.dirty)
 		return;
-	s->dirty = 0;
+	s->draw.dirty = 0;
 	sc_win_t *sb;
 	TAILQ_FOREACH_REVERSE(sb, &s->sub, sub, self) {
 		_sc_render_subs(sb, 0);
@@ -1017,12 +1091,13 @@ _sc_render_subs(
 	if (s->driver && s->driver->draw)
 		s->driver->draw(s);
 
+	sc_draw_t *d = &s->draw;
 	for (int y = 0; y < s->h; y++) {
 		int dy = s->y + y;
 		if (dy < 0 || dy >= s->parent->h)
 			continue;
-		if (y < s->line.count) {	// non-empty line
-			sc_line_t * l = &s->line.e[y];
+		if (y < d->line.count) {	// non-empty line
+			sc_line_t * l = &d->line.e[y];
 			int dx = s->x, sx = 0;
 			#if 0
 			int leading = 0;// count leading spaces, for center/right justify
@@ -1030,7 +1105,7 @@ _sc_render_subs(
 				if (l->e[i].g == 0 || l->e[i].g == ' ')
 					leading++;
 			#endif
-			switch (s->justify) {
+			switch (d->justify) {
 				case SC_WIN_JUSTIFY_CENTER:
 					if (l->count > s->w)
 						sx = (l->count - s->w) / 2;
@@ -1049,22 +1124,20 @@ _sc_render_subs(
 			}
 
 			for (; dx < (s->x + s->w) && sx < l->count; sx++, dx++) {
-				//	int dx = s->x + x;
 				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_store_xy(s->parent, &l->e[sx], dx, dy);
+					sc_draw_store_xy(&s->parent->draw, &l->e[sx], dx, dy);
 				}
 			}
 			for (; dx < (s->x + s->w); dx++) {
-				//	int dx = s->x + x;
 				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_store_xy(s->parent, NULL, dx, dy);
+					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
 				}
 			}
 		} else {	// empty line, clear it.
 			for (int x = 0; x < s->w; x++) {
 				int dx = s->x + x;
 				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_store_xy(s->parent, NULL, dx, dy);
+					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
 				}
 			}
 		}
@@ -1099,26 +1172,32 @@ _sc_render_flush_style(
 	if (n.invert != o.invert)
 		sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", n.invert ? 7 : 27);
 	if (n.fore != o.fore) {
-		if (n.fore < 8)
+		if (!n.has_fore)
+			sc_buf_printf(&seq, "%s0", c++ > 0 ? ";" : "");
+		else if (n.fore < 8)
 			sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", 30 + n.fore);
 		else
 			sc_buf_printf(&seq, "%s38;5;%d", c++ > 0 ? ";" : "", n.fore);
 	}
 	if (n.back != o.back) {
-		if (n.back < 8)
-			sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", 40 + n.fore);
+		if (!n.has_back)
+			sc_buf_printf(&seq, "%s0", c++ > 0 ? ";" : "");
+		else if (n.back < 8)
+			sc_buf_printf(&seq, "%s%d", c++ > 0 ? ";" : "", 40 + n.back);
 		else
-			sc_buf_printf(&seq, "%s48;5;%d", c++ > 0 ? ";" : "", n.fore);
+			sc_buf_printf(&seq, "%s48;5;%d", c++ > 0 ? ";" : "", n.back);
 	}
 	if (!c)
 		sc_buf_add(&seq, '0');
 	sc_buf_add(&seq, 'm');
 #if 0
-	printf("  %d bytes seq: ", seq.count);
-	for (int i = 0; i < seq.count; i++)
+	printf("     Insert offset %d, %d bytes seq: ",
+		   sc->render.style_insert, seq.count);
+	for (int i = 0; i < seq.count; i++) {
 		if (seq.e[i] < ' ')
 			printf("%02x", seq.e[i]);
-	else printf("%c", seq.e[i]);
+		else printf("%c", seq.e[i]);
+	}
 	printf("\n");
 #endif
 	sc_buf_insert(out, sc->render.style_insert, seq.e, seq.count);
@@ -1148,9 +1227,6 @@ _sc_render_glyph(
 {
 	sc_glyph_t *g = &l->e[x];
 
-	// if we had a space run, and find something else, flush spaces.
-	if (g->g && g->g != ' ')
-		_sc_render_flush_space(sc, o);
 	/*
 	 * Count the characters we output with the same style. If the style change,
 	 * go back and insert the style setting sequence at the last point we
@@ -1161,9 +1237,11 @@ _sc_render_glyph(
 		_sc_render_flush_style(sc, o);
 		// next insert point for a style change
 		sc->render.style_insert = o->count;
+		sc->render.style_count = 1;
 		sc->render.style.raw = g->style.raw;
 	} else
 		sc->render.style_count++;
+	// if we had a space run, and find something else, flush spaces.
 	switch (g->g) {
 		/*
 		 * We count space, don't store them; if a run is bigger than 5,
@@ -1172,16 +1250,18 @@ _sc_render_glyph(
 		 */
 		case 0: // default/space
 		case ' ':
-			sc->render.space_count ++;
+			sc->render.space_count++;
 			break;
-		default:
+		default: {
+			if (sc->render.space_count)
+				_sc_render_flush_space(sc, o);
 			if (g->g > 0x7f) {
 				char ut[8];
 				int len = _sc_render_utf8_glyph(ut, g->g) - ut;
 				sc_buf_concat(o, (uint8_t*)ut, len);
 			} else
 				sc_buf_add(o, g->g);
-		break;
+		}	break;
 	}
 }
 
@@ -1225,9 +1305,10 @@ sc_render(
 					  sc->output.lines, sc->screen.w, sc->screen.h);
 	}
 #endif
+	sc_draw_t *d = &s->draw;
 	sc->output.lines = 0;
-	for (int y = 0; y < s->line.count; y++) {
-		sc_line_t * l = &s->line.e[y];
+	for (int y = 0; y < d->line.count; y++) {
+		sc_line_t * l = &d->line.e[y];
 		_sc_render_line(sc, s, &sc->output, l);
 		sc_buf_push(&sc->output, '\n');
 		sc->output.lines++;
@@ -1272,11 +1353,7 @@ void
 sc_win_clear(
 	sc_win_t *s )
 {
-	for (int i = 0; i < s->line.count; i++)
-		sc_line_free(&s->line.e[i]);
-	sc_lines_free(&s->line);
-	s->style.raw = 0;
-	s->c_x = s->c_y = 0;
+	sc_draw_clear(&s->draw);
 }
 
 void
@@ -1285,7 +1362,7 @@ sc_win_dirty(
 {
 	sc_win_t *p = s;
 	do {
-		p->dirty = 1;
+		sc_draw_dirty(&p->draw);
 		p = p->parent;
 	} while(p);
 }
@@ -1301,10 +1378,7 @@ sc_win_dispose(
 	while ((sb = TAILQ_FIRST(&s->sub)) != NULL) {
 		sc_win_dispose(sb);
 	}
-
-	for (int li = 0; li < s->line.count; li++)
-		sc_line_free(&s->line.e[li]);
-	sc_lines_free(&s->line);
+	sc_draw_dispose(&s->draw);
 	if (s->driver && s->driver->free)
 		s->driver->free(s);
 	// don't delete detached/main screen
@@ -1334,18 +1408,18 @@ sc_win_set(
 
 void
 sc_win_goto(
-	sc_win_t *s, int x, int y)
+	sc_win_t *s,
+	int x, int y)
 {
-	if (x >= 0)
-		s->c_x = x;
-	if (y >= 0)
-		s->c_y = y;
+	sc_draw_goto(&s->draw, x, y);
 }
 
 
 //#ifdef DEBUG
 void
-sc_win_dump(sc_win_t *s) {
+sc_draw_dump(
+		sc_draw_t *s)
+{
 	for (int y = 0; y < s->line.count; y++) {
 		sc_line_t * l = &s->line.e[y];
 		for (int x = 0; x < l->count; x++)

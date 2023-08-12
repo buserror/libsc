@@ -35,7 +35,7 @@ subfile(const char * fname, FILE *out, int skip_header, int recurse) {
 					fname[strlen(fname)-1] == '"'))
 				fname[strlen(fname)-1] = 0;
 			if (recurse)
-				subfile(fname, out, 1, 0) == 0;
+				subfile(fname, out, 1, 0);
 			continue;
 		}
 		fwrite(line, 1, strlen(line), out);

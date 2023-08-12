@@ -8,14 +8,16 @@ SHELL			= /bin/bash
 TARGET			= libsc
 DESC			= C terminal display tool
 SOV			?= 1
-O 			= .
+#O 			= .
 # Auto load all the .c files dependencies, and object files
 LIBSRC			:= ${notdir ${wildcard src/*.c}}
 
 # Tell make/gcc to find the files in VPATH
 VPATH 			= src
 IPATH 			= src
+ifneq ($(CC), emcc)
 CFLAGS			= -Wall -Og -gdwarf-2 -g3
+endif
 
 -include ../Makefile.common
 -include Makefile.common
@@ -48,21 +50,17 @@ clean			::
 	rm -f sc_test* sc_cpu*
 	rm -f $(LIB)/$(TARGET).*
 
-tests			: sc_test sc_cpu
-debug			: sc_test_d sc_cpu_d
+TESTS_SRC	= ${wildcard tests/*.c}
+TESTS_DST	:= ${patsubst %, ${OBJ}/%, ${notdir ${TESTS_SRC:.c=}}}
+TESTS_DST_DBG	:= ${patsubst %, ${OBJ}/%, ${notdir ${TESTS_SRC:.c=_d}}}
 
-sc_test			: tests/sc_test.c sc.h | all
-	gcc -I../include -I. -Wall -Og -g $< -o $@
-sc_test_d		: tests/sc_test.c sc.h | all
-	gcc -I../include -I. -DSC_DEBUG -Wall -Og -g $< -o $@ \
-		-L$(LIB) \
-		-Wl,-rpath,${shell readlink -f ${LIB}} \
-		-lsc
+tests			: $(TESTS_DST)
+debug			: $(TESTS_DST_DBG)
 
-sc_cpu			: tests/sc_cpu.c sc.h | all
+${OBJ}/%	: tests/%.c sc.h | all
 	built=$$(date '+%Y-%m-%d');
 	gcc -I../include -I. -Wall -static -DBUILT=\"$$built\" -Os -g $< -o $@
-sc_cpu_d			: tests/sc_cpu.c sc.h | all
+${OBJ}/%_d	: tests/%.c sc.h | all
 	gcc -I../include -I. -DSC_DEBUG -DBUILT=\"debug\" $(CFLAGS) $< -o $@ \
 		-L$(LIB) \
 		-Wl,-rpath,${shell readlink -f ${LIB}} \

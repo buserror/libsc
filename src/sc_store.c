@@ -15,8 +15,8 @@ enum {
 };
 
 sc_glyph_t *
-sc_store_xy(
-	sc_win_t *s,
+sc_draw_store_xy(
+	sc_draw_t *s,
 	const sc_glyph_t *g,
 	int x, int y)
 {
@@ -25,18 +25,27 @@ sc_store_xy(
 		sc_lines_add(&s->line, zero);
 	}
 	sc_line_t * l = &s->line.e[y];
+	const sc_glyph_t zero = {};
 	while (l->count <= x) {
-		const sc_glyph_t zero = {};
 		sc_line_add(l, zero);
 	}
-	if (g)
-		l->e[x] = *g;
+	if (g) {
+		if (l->e[x].g != g->g || l->e[x].style.raw != g->style.raw) {
+			sc_draw_dirty(s);
+			l->e[x] = *g;
+		}
+	} else {
+		if (l->e[x].g || l->e[x].style.raw) {
+			sc_draw_dirty(s);
+			l->e[x] = zero;
+		}
+	}
 	return &l->e[x];
 }
 
 int
-_sc_add_store(
-	sc_win_t *s,
+_sc_draw_add_store(
+	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags)
 {
@@ -52,7 +61,7 @@ _sc_add_store(
 	sc_glyph_t g = { .g = c, .style = s->style };
 	if (l->e[s->c_x].raw != g.raw) {
 		l->e[s->c_x] = g;
-		sc_win_dirty(s);
+		sc_draw_dirty(s);
 	}
 	if (!(flags & SC_ADD_NO_ADVANCE)) {
 		s->c_x++;
@@ -61,7 +70,7 @@ _sc_add_store(
 			s->c_y++;
 		}
 	}
-	return 0;
+	return s->dirty;
 }
 
 static void
@@ -69,23 +78,23 @@ sc_store_do_csi(
 	sc_t *sc,
 	uint8_t c)
 {
-	sc_win_t *s = sc->current;
+	sc_draw_t *s = &sc->current->draw;
 	switch (c) {
 		case 'A': { // move Y up
-			int c = 1;
+			int cl = 1;
 			if (sc->add.pcount)
-				c = sc->add.p[0];
-			if (s->c_y > c)
+				cl = sc->add.p[0];
+			if (s->c_y > cl)
 				s->c_y = 0;
 			else
-				s->c_y -= c;
+				s->c_y -= cl;
 		}	break;
 		case 'G': { // Move absolute X
-			int c = 1;
+			int cl = 1;
 			if (sc->add.pcount)
-				c = sc->add.p[0];
-			if (c) c--;	// 1 based to zero based
-			s->c_x = c;
+				cl = sc->add.p[0];
+			if (cl) cl--;	// 1 based to zero based
+			s->c_x = cl;
 		}	break;
 		case 'm': {	// style/colors
 			for (int pi = 0; pi < sc->add.pcount; pi++) {
@@ -144,6 +153,7 @@ sc_store_do_csi(
 		}	break;
 	}
 }
+
 static void
 sc_store_do_esc(
 	sc_t *sc,
@@ -174,7 +184,7 @@ sc_add_machine(
 	sc_t *sc,
 	uint8_t c)
 {
-	sc_win_t *s = sc->current;
+	sc_draw_t *s = &sc->current->draw;
 	pt_start(sc->add.pt);
 
 	switch (c) {
@@ -232,7 +242,8 @@ sc_add_machine(
 
 			} else
 #endif
-			_sc_add_store(s, c, 0);
+			if (_sc_draw_add_store(s, c, 0))
+				sc_win_dirty(sc->current);
 	}
 	pt_end(sc->add.pt);
 }
