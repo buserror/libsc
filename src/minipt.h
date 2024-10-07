@@ -25,17 +25,26 @@
  * storing the address of a 'local variable' (which is the label!) */
 static inline void _set_gcc_ptr_workaround(void **d, void *s) {
 #pragma GCC diagnostic push
+#if __GNUC__ >= 12
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
 	*d = s;
 #pragma GCC diagnostic pop
 }
 #define pt_start(_pt) do { \
 		if (_pt) goto *_pt; \
 	} while (0);
-#define pt_end(_pt) do { _pt = NULL; return; } while(0);
+#define pt_end(_pt) do { \
+		(_pt) = NULL; \
+		_pt_exit: ; \
+	} while(0);
+#define pt_finish(_pt) do { \
+		(_pt) = NULL; \
+		goto _pt_exit;\
+	} while(0);
 #define pt_yield(_pt) do { \
-		_set_gcc_ptr_workaround(&_pt, &&_CONCAT(_label, __LINE__));\
-		return;\
+		_set_gcc_ptr_workaround(&(_pt), &&_CONCAT(_label, __LINE__));\
+		goto _pt_exit;\
 		_CONCAT(_label, __LINE__): ; \
 	} while (0);
 
@@ -62,7 +71,7 @@ struct pt_t {
 	} while (0);
 #define pt_end(_pt) do { (_pt)->st[(_pt)->sp] = NULL; return; } while(0);
 #define pt_yield(_pt) do { \
-		(_pt)->st[(_pt)->sp] = &&_CONCAT(_label, __LINE__);\
+		_set_gcc_ptr_workaround(&(_pt)->st[(_pt)->sp], &&_CONCAT(_label, __LINE__));\
 		return;\
 		_CONCAT(_label, __LINE__): ; \
 	} while (0);

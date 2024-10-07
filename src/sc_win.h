@@ -40,6 +40,12 @@ void
 sc_win_goto(
 	sc_win_t *s,
 	int x, int y);
+/* Call sc_add with the printf-equivalent string */
+int
+sc_win_printf(
+	sc_win_t *s,
+	const char *f,
+	...);
 
 /* static */ sc_win_t *
 _sc_win_init(

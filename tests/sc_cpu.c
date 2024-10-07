@@ -8,10 +8,6 @@
 
 #define _GNU_SOURCE // for asprintf
 #include <stdio.h>
-#ifndef DEBUG
-#define SC_H_IMPLEMENTATION
-#endif
-#include "sc.h"
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -20,6 +16,14 @@
 #include <sys/sysinfo.h>
 #include <termios.h>
 #include <glob.h>
+#ifndef DEBUG
+#define SC_H_IMPLEMENTATION
+#endif
+#include "sc.h"
+
+#ifndef BUILT
+#define BUILT "(dev)"
+#endif
 
 typedef struct s_core_t {
 	long long cpu, idle;
@@ -31,7 +35,7 @@ DECLARE_C_ARRAY(s_core_t*, thread, 2);
 typedef struct s_phy_t {
 	char * model;
 	int phy : 4;
-	int coretemp_fd;
+	int coretemp_fd, corepower_fd;
 	char temp_label[16];
 	core_t core;
 } s_phy_t;
@@ -41,7 +45,9 @@ IMPLEMENT_C_ARRAY(core);
 IMPLEMENT_C_ARRAY(thread);
 IMPLEMENT_C_ARRAY(phy);
 
-static int read_sys_file(int fd, char *dst, int dst_size)
+static int
+read_sys_file(
+		int fd, char *dst, int dst_size)
 {
 	if (fd <= 0 || !dst || !dst_size)
 		return 0;
@@ -52,6 +58,7 @@ static int read_sys_file(int fd, char *dst, int dst_size)
 		perror("sys file read error");
 		exit(1);
 	}
+	dst[s] = 0;	// zero terminate this
 	while (s > 0 && dst[s-1] < ' ') dst[--s] = 0;
 	return s;
 }
@@ -72,22 +79,153 @@ static int open_sys_file(
 	return keep_open ? fd : s;
 }
 
-int main(int argc, const char *argv[])
+static void draw_core(
+	sc_win_t * chart,
+	int th_height, int th_width,
+	int bx, s_core_t * t)
 {
-	int sort = 0;	// sort CPU per usage
-	char buf[8192];
+	const int colors[] = { 0, 17, 53, 89, 125, 161, 197 };
+	for (int y = 1; y <= th_height; y++) {
+		int py = 100 - ((y * 100) / th_height);
+
+		sc_glyph_t *g = sc_draw_store_xy(
+							&chart->draw, NULL, bx, y-1);
+		//	g->g = 0;
+		if (py <= t->usage) {
+			if (!t->awake)
+				g->g = 0;
+			else if ((t->usage - py) < 10) {
+				g->g = 0x2581 + (((t->usage - py) * 8) / 10);
+			} else
+				g->g = 0x2588;	// one eight's, add up to 2588
+		} else {	// peak drawing
+			if (y == 1) {
+				if (g->g >= 0x2581 && g->g <= 0x2588) {
+					static const int map8to6[] =
+							{0,1,2,3,4,4,5,5};
+					g->g = 0x1FB7b - map8to6[g->g - 0x2581];
+				}
+			} else
+				g->g = 0;
+		}
+		// color decay
+		if (y == 1) {
+			if (t->peak) {
+				g->style.has_fore = 1;
+				g->style.fore = colors[t->peak];
+				t->peak--;
+			} else if (g->style.has_fore) {
+				g->style.has_fore = 0;
+				g->style.fore = 0;
+				g->g = 0;
+			}
+		}
+		if (g) for (int x = 1; x < th_width; x++)
+			*(sc_draw_store_xy(
+					&chart->draw, NULL, bx + x, y - 1)) = *g;
+	}
+}
+
+static int
+_cpu_core_sort(
+	const void *a,
+	const void *b)
+{
+	s_core_t *ca = *(s_core_t**)a;
+	s_core_t *cb = *(s_core_t**)b;
+	if (ca->usage < cb->usage)
+		return 1;
+	if (ca->usage > cb->usage)
+		return -1;
+	return 0;
+}
+
+/*
+ * This tries to get a CPU temperature sensor for the various vendors
+ * k10temp is the basic AMD sensor, coretemp is the basic Intel sensor,
+ * and zenpower is a fancier AMD sensor (not in main kernel)
+ */
+static void
+_cpu_hwmon_init(
+	phy_t *p)
+{
+	glob_t g = {};
+	if (glob("/sys/class/hwmon/hwmon*", 0, NULL, &g) != 0)
+		return;
+	for (int i = 0; i < g.gl_pathc; i++) {
+		char name[32] = "", label[32] = "", temp[32] = "";
+		open_sys_file(g.gl_pathv[i], "name", 0, name, sizeof(name));
+		open_sys_file(g.gl_pathv[i], "temp1_label", 0, label, sizeof(label));
+		int fd_temp = open_sys_file(g.gl_pathv[i], "temp1_input", 1, temp, sizeof(temp));
+		int pi = -1;
+		//printf("hwmon %s %s %s\n", name, label, temp);
+		if (!strcmp(name, "coretemp")) {
+			if (!strncmp(label, "Package id ", 11)) {
+				pi = atoi(label + 11);
+				if (pi < 0 || pi >= p->count) {
+					printf("coretemp: invalid package id %d (%s)\n",
+							pi, label);
+					pi = -1;
+				}
+		//		printf("CPU%d: coretemp %s\n", pi, temp);
+			}
+		}
+		if (!strcmp(name, "k10temp")) {
+			if (!strcmp(label, "Tctl")) {
+				pi = 0;
+				while (p->e[pi].coretemp_fd >= 0 && pi < p->count)
+					pi++;
+				if (pi == p->count) {
+					printf("k10temp: too many CPUs\n");
+					pi = -1;
+				}
+			//	printf("CPU%d: k10temp %s\n", pi, temp);
+			}
+		}
+		if (!strcmp(name, "zenpower")) {
+			int l = strlen(label);
+			// label is like "cpu0 Tdie" -- we want that index
+			if (l >= 9 && !strcmp(label + l - 5, " Tdie")) {
+				pi = atoi(label + 3);
+				if (pi < 0 || pi >= p->count) {
+					printf("zenpower: invalid package id %d (%s)\n",
+							pi, label);
+					pi = -1;
+				}
+			}
+		}
+		if (pi < p->count) {
+			p->e[pi].coretemp_fd = fd_temp;
+			fd_temp = -1;
+		//	printf("CPU%d: temp %s\n", pi, temp);
+		}
+		if (fd_temp >= 0) close(fd_temp);
+	}
+	globfree(&g);
+}
+
+int main(
+		int argc,
+		const char *argv[])
+{
+	char buf[16 * 1024];
 	phy_t p = {};
 	thread_t cpu = {};
+	int sort = 1;	// sort CPU per usage
 
 	thread_realloc(&cpu, sysconf(_SC_NPROCESSORS_ONLN));
 	cpu.count = cpu.size;
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			fprintf(stderr, "%s: --help\n", argv[0]);
+			fprintf(stderr, "	-s|--sort : 'Mountain' sorting [default].\n");
+			fprintf(stderr, "	-f|--flat : Sort by core ID.\n");
 			fprintf(stderr, "	version %s\n", BUILT);
 			exit(0);
 		} else if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--sort"))
 			sort++;
+		else if (!strcmp(argv[i], "-f") || !strcmp(argv[i], "--flat"))
+			sort = 0;
 	}
 	{	// map the threads numbers back to processor/core and make a table
 		s_phy_t *c_p = NULL;
@@ -115,13 +253,19 @@ int main(int argc, const char *argv[])
 				core_add(&c_p->core, z);
 			} else if (!strncmp(buf, "model name", 10)) {
 				char * s = strchr(buf + 10, ':') + 2;
-				char *start = s;
+				char * start = s;
 				char * skip;
+				// trim bits we don't care about from the model name
 				if ((skip = strstr(start, "CPU ")) != NULL)
 					memmove(skip, skip + 4, strlen(skip) - 3);
 				if ((skip = strstr(start, "Intel(R) ")) != NULL)
 					memmove(skip, skip + 9, strlen(skip) - 8);
-				while (strlen(start) && start[strlen(start)-1] < ' ')
+				if ((skip = strstr(start, "AMD ")) != NULL)
+					memmove(skip, skip + 4, strlen(skip) - 3);
+				if ((skip = strstr(start, "Processor")) != NULL)
+					memmove(skip, skip + 9, strlen(skip) - 8);
+				// remove trailing spaces
+				while (strlen(start) && start[strlen(start)-1] <= ' ')
 					start[strlen(start)-1] = 0;
 				strncpy(model, start, sizeof(model)-1);
 			}
@@ -138,25 +282,8 @@ int main(int argc, const char *argv[])
 			cpu.e[t->proc] = t;
 		}
 	}
-	{	// search for a coretemp module, and get the package input one
-		glob_t g = {};
-		if (glob("/sys/class/hwmon/hwmon*", 0, NULL, &g) == 0) {
-			for (int i = 0; i < g.gl_pathc; i++) {
-				char buf[32] = "";
-				open_sys_file(g.gl_pathv[i], "name", 0, buf, sizeof(buf));
-				if (strncmp(buf, "coretemp", 8)) continue;
-				open_sys_file(g.gl_pathv[i], "temp1_label", 0, buf, sizeof(buf));
-				if (strncmp(buf, "Package id ", 11)) continue;
-				int pi = atoi(buf+11);
-				if (pi < p.count) {
-					p.e[pi].coretemp_fd = open_sys_file(
-						g.gl_pathv[i], "temp1_input", 1, buf, sizeof(buf));
-				//	printf("coretemp fd %d current %s\n", p.e[pi].coretemp, buf);
-				}
-			}
-			globfree(&g);
-		}
-	}
+	_cpu_hwmon_init(&p);
+
 	int fd = open("/proc/stat", O_RDONLY);
 	if (fd == -1) {
 		perror("/proc/stat");
@@ -185,8 +312,9 @@ int main(int argc, const char *argv[])
 		case 25 ... 40: th_width = 2; th_spacer = 0; break;
 		default:  		th_width = 1; th_spacer = 0; break;
 	}
-	tw_width = (cpu.count * th_width) + ((cpu.count - 1) * th_spacer);
+	tw_width = (cpu.count * th_width) + (!sort * ((cpu.count - 1) * th_spacer));
 	sc_win_t * chart = sc_box(NULL, 0, 0, tw_width + 2, th_height + 2, 0);
+
 	sc_box_title_set(chart, "Press Q to quit");
 	int ticks = 0, set_title = 0;
 	char model[128] = "Press Q to quit";
@@ -221,8 +349,6 @@ int main(int argc, const char *argv[])
 		}
 		read_sys_file(fd, buf, sizeof(buf));// read /proc/stats
 
-		const int colors[] = { 0, 17, 53, 89, 125, 161, 197 };
-
 		for (int ci = 0; ci < cpu.count; ci++)
 			cpu.e[ci]->awake = 0;
 		read_sys_file(fd, buf, sizeof(buf));// read /proc/stats
@@ -256,49 +382,30 @@ int main(int argc, const char *argv[])
 		}
 		sc_win_dirty(chart);	// force redraw
 		int bx = 0;
-		if (ticks) for (int pi = 0; pi < p.count; pi++) {
-			s_phy_t * phy = &p.e[pi];
-			for (int ti = 0; ti < phy->core.count; ti++) {
-				s_core_t *t = &phy->core.e[ti];
-				for (int y = 1; y <= th_height; y++) {
-					int py = 100 - ((y * 100) / th_height);
-
-					sc_glyph_t *g = sc_draw_store_xy(&chart->draw, NULL, bx, y-1);
-					//	g->g = 0;
-					if (py <= t->usage) {
-						if (!t->awake)
-							g->g = 0;
-						else if ((t->usage - py) < 10) {
-							g->g = 0x2581 + (((t->usage - py) * 8) / 10);
-						} else
-							g->g = 0x2588;	// one eight's, add up to 2588
-					} else {	// peak drawing
-						if (y == 1) {
-							if (g->g >= 0x2581 && g->g <= 0x2588) {
-								static const int map8to6[] = {0,1,2,3,4,4,5,5};
-								g->g = 0x1FB7b - map8to6[g->g - 0x2581];
-							}
-						} else
-							g->g = 0;
-					}
-					// color decay
-					if (y == 1) {
-						if (t->peak) {
-							g->style.has_fore = 1;
-							g->style.fore = colors[t->peak];
-							t->peak--;
-						} else if (g->style.has_fore) {
-							g->style.has_fore = 0;
-							g->style.fore = 0;
-							g->g = 0;
-						}
-					}
-					if (g) for (int x = 1; x < th_width; x++)
-						*(sc_draw_store_xy(&chart->draw, NULL, bx + x, y - 1)) = *g;
+		if (ticks) {
+			if (sort) {
+				s_core_t * sorted[cpu.count];
+				for (int ci = 0; ci < cpu.count; ci++)
+					sorted[ci] = cpu.e[ci];
+				qsort(sorted, cpu.count, sizeof(s_core_t*), _cpu_core_sort);
+				for (int ci = 0; ci < cpu.count / 2; ci++) {
+					bx = (th_width * (cpu.count / 2)) - 1;
+					draw_core(chart, th_height, th_width,
+							bx - (ci * th_width), sorted[(ci * 2)]);
+					draw_core(chart, th_height, th_width,
+							1 + bx + (ci * th_width), sorted[(ci * 2) + 1]);
 				}
-				bx += th_width + th_spacer;
+			} else {
+				for (int pi = 0; pi < p.count; pi++) {
+					s_phy_t * phy = &p.e[pi];
+					for (int ti = 0; ti < phy->core.count; ti++) {
+						s_core_t *t = &phy->core.e[ti];
+						draw_core(chart, th_height, th_width, bx, t);
+						bx += th_width + th_spacer;
+					}
+					bx += 1;	// space between phy
+				}
 			}
-			bx += 1;	// space between phy
 		}
 		sc_render(NULL, 0);
 

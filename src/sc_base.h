@@ -10,6 +10,7 @@
 #define __SC_H__
 
 #include <stdint.h>
+#include <string.h>
 #include <sys/queue.h>
 #include "c_array.h"
 
@@ -19,9 +20,9 @@ enum {
 
 typedef union sc_style_t {
 	struct {
-		uint32_t fore : 8, back : 8,
-				has_fore : 1, has_back : 1,
-				bold : 1, under : 1, invert : 1;
+		uint32_t 	fore : 8, back : 8,
+					has_fore : 1, has_back : 1,
+					bold : 1, under : 1, invert : 1;
 	};
 	uint32_t 	raw;
 } sc_style_t;
@@ -60,9 +61,12 @@ typedef struct sc_draw_t {
 								kind : 8,	// for custom windows/boxes
 								draw_style : 4;	// for draw_cb
 	uint8_t 					c_x, c_y;	// current cursor position
+	uint8_t 					w, h;		// size
 	sc_style_t 					style; 		// current style
 	sc_lines_t 					line;
 } sc_draw_t;
+
+DECLARE_C_ARRAY(sc_draw_t, sc_draw_array, 2);
 
 typedef struct sc_win_t {
 	sc_draw_t					draw;
@@ -71,7 +75,7 @@ typedef struct sc_win_t {
 	TAILQ_HEAD(sub,sc_win_t)	sub;
 	sc_win_driver_t const *		driver;
 	TAILQ_ENTRY(sc_win_t)		self;
-	uint8_t 					x,y,w,h;	// position in parent window, size
+	uint8_t 					x, y;		// position in parent window
 } sc_win_t;
 
 #include "sc_buf.h"
@@ -81,45 +85,50 @@ enum {
 	SC_REDRAW		= (1 << 2),		// supports redrawing same lines
 };
 
+typedef struct sc_add_context_t {
+	void *						pt;
+	unsigned int 				pcount;	// parameter count (+1)
+	unsigned int 				p[16];
+	unsigned int 				utf8_state;
+	uint32_t 					utf8_glyph;
+} sc_add_context_t;
+
+typedef struct sc_render_context_t {
+	void *						pt;
+	unsigned int 				space_count;	// space count
+	sc_style_t					style, old_style; // detect style change boundary
+	unsigned int				style_count;
+	unsigned int				style_insert;	// insert offset for the style sequence
+} sc_render_context_t;
+
 typedef struct sc_t {
 	uint32_t					flags;
 	sc_win_t 					screen; // main rendering window
 	sc_win_t *					current;
 	sc_buf_t					output;	// last generated output
-	struct {
-		void *			pt;
-		unsigned int 	pcount;	// parameter count (+1)
-		unsigned int 	p[16];
-		unsigned int 	utf8_count;
-		uint32_t 		utf8;
-	} 				add;
-	struct {
-		void *			pt;
-		unsigned int 	space_count;	// space count
-		sc_style_t		style, old_style; // detect style change boundary
-		unsigned int	style_count;
-		unsigned int	style_insert;	// insert offset for the style sequence
-	} 				render;
+	sc_add_context_t			add;	// add context
+	sc_render_context_t			render;	// render context
 } sc_t;
 
 /* Create a new sc instance. This is recommended before you do anything,
  * but it is currently mostly optional as one will get created anyway */
 sc_t *
 sc_new(
-	uint32_t flags);
+		uint32_t flags);
 
 void
 sc_dispose(
-	sc_t * sc);
+		sc_t * sc);
 /* Move cursor to x, y in 'current window' in sc */
 void
 sc_goto(
-		sc_t *sc, int x, int y);
+		sc_t *sc,
+		int x, int y);
 /* Non-blocking get character from console, return 0, or 1+characters sequence */
 unsigned int
 sc_getch(
-	sc_t * sc,
-	unsigned int timeout_ms);
+		sc_t * sc,
+		unsigned int timeout_ms);
 
 #include "sc_draw.h"
 #include "sc_store.h"
@@ -142,6 +151,7 @@ extern sc_t * g_sc;	// in sc_base.c
 IMPLEMENT_C_ARRAY(sc_line);
 IMPLEMENT_C_ARRAY(sc_lines);
 IMPLEMENT_C_ARRAY(sc_buf);
+IMPLEMENT_C_ARRAY(sc_draw_array);
 
 #endif
 

@@ -16,7 +16,12 @@
 #include <string.h>
 
 static int
-subfile(const char * fname, FILE *out, int skip_header, int recurse) {
+subfile(
+	const char * fname,
+	FILE *out,
+	int skip_header,
+	int recurse)
+{
 	FILE *f = fopen(fname, "r");
 	printf("%s#include \"%s\"\n", f ? "// " : "", fname + 4);
 	if (!f) return -1;
@@ -34,6 +39,7 @@ subfile(const char * fname, FILE *out, int skip_header, int recurse) {
 			while (*fname && (fname[strlen(fname)-1] == '\n' ||
 					fname[strlen(fname)-1] == '"'))
 				fname[strlen(fname)-1] = 0;
+		//	fprintf(stderr, "Including \"%s\" recurse %d\n", fname, recurse);
 			if (recurse)
 				subfile(fname, out, 1, 0);
 			continue;
@@ -43,6 +49,9 @@ subfile(const char * fname, FILE *out, int skip_header, int recurse) {
 	return 0;
 }
 
-int main (int argc, char **argv) {
+int main(
+	int argc,
+	char **argv)
+{
 	subfile("src/sc_base.h", stdout, 0, 1);
 }

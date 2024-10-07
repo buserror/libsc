@@ -38,21 +38,21 @@ _sc_box_render(
 
 	sc_draw_t * s = &_s->draw;
 	sc_draw_goto(s, x, y);
-	_sc_draw_add_store(s, style->tl, 0);
+	_sc_draw_store_add(s, style->tl, 0);
 	for (int sx = x+1; sx < (x + w - 1); sx++)
-		_sc_draw_add_store(s, style->h, 0);
-	_sc_draw_add_store(s, style->tr, 0);
+		_sc_draw_store_add(s, style->h, 0);
+	_sc_draw_store_add(s, style->tr, 0);
 	sc_draw_goto(s, x, y + h-1);
-	_sc_draw_add_store(s, style->bl, 0);
+	_sc_draw_store_add(s, style->bl, 0);
 	for (int sx = x+1; sx < (x + w - 1); sx++)
-		_sc_draw_add_store(s, style->h, 0);
-	_sc_draw_add_store(s, style->br, 0);
+		_sc_draw_store_add(s, style->h, 0);
+	_sc_draw_store_add(s, style->br, 0);
 
 	for (int sy = y + 1; sy < (y + h - 1); sy++) {
 		sc_draw_goto(s, x, sy);
-		_sc_draw_add_store(s, style->v, 0);
+		_sc_draw_store_add(s, style->v, 0);
 		sc_draw_goto(s, x + w - 1, sy);
-		_sc_draw_add_store(s, style->v, 0);
+		_sc_draw_store_add(s, style->v, 0);
 	}
 	sc_win_dirty(_s);
 	return 0;
@@ -63,7 +63,8 @@ _sc_box_render_cb(
 	sc_win_t *s)
 {
 	sc_box_t * box = (sc_box_t*)s;
-	_sc_box_render(s, &sc_box_style[s->draw.draw_style], 0, 0, s->w, s->h);
+	_sc_box_render(s, &sc_box_style[s->draw.draw_style], 
+			0, 0, s->draw.w, s->draw.h);
 	if (box->title) {
 		sc_win_t *save = s->sc->current;
 		sc_win_set(s->sc, s);
@@ -103,13 +104,13 @@ sc_box(
 		parent = sc->current = &sc->screen;
 
 	sc_win_t *s = sc_win_new(sc, parent, sizeof(sc_box_t));
-	s->x = x; s->y = y; s->w = w; s->h = h;
+	s->x = x; s->y = y; s->draw.w = w; s->draw.h = h;
 	s->driver = &_driver;
 	s->draw.draw_style = flags;
 	s->draw.kind = SC_BOX_PLAIN;
 
 	sc_win_t *sub = sc_win_new(sc, s, 0);
-	sub->x = 1; sub->y = 1; sub->w = w - 2; sub->h = h - 2;
+	sub->x = 1; sub->y = 1; sub->draw.w = w - 2; sub->draw.h = h - 2;
 	sc->current = sub;
 
 	return sub;

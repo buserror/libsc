@@ -5,7 +5,6 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-
 #ifndef DEBUG
 #define SC_H_IMPLEMENTATION
 #endif
@@ -36,18 +35,19 @@ int main()
 		sc_win_goto(update, 5, 1);
 		sc_printf(NULL, "\033[48;5;161mDef\033[0m Ghi");
 	}
-	if (1)
+	if (1) {
 		sc_render(NULL, 0);
-	else {
+	} else {
 		sc_render(NULL, SC_RENDER_NO_STDOUT);
 		printf("\033[0m\nOut is %d\n", sc->output.count);
 		FILE *o = fopen("dump.bin", "wb");
 		fwrite(sc->output.e, sc->output.count, 1, o);
 		fclose(o);
-		sc_draw_dump(&update->draw);
+		sc_draw_dump(&main->draw);
 		exit(0);
 	}
 	int done = 0;
+	sc_win_set(NULL, update);
 	do {
 		unsigned int k = sc_getch(NULL, 1000);
 		switch (k) {

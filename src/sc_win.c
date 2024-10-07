@@ -103,19 +103,33 @@ sc_win_goto(
 	sc_draw_goto(&s->draw, x, y);
 }
 
+int
+sc_win_printf(
+	sc_win_t *s,
+	const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	int r = sc_draw_vprintf(&s->sc->add, &s->draw, fmt, ap);
+	va_end(ap);
+	if (s->draw.dirty)
+		sc_win_dirty(s);
+	return r;
+}
 
 //#ifdef DEBUG
 void
 sc_draw_dump(
 		sc_draw_t *s)
 {
+	printf("%s %d lines. dirty:%d\n", __func__, s->line.count, s->dirty);
 	for (int y = 0; y < s->line.count; y++) {
 		sc_line_t * l = &s->line.e[y];
 		for (int x = 0; x < l->count; x++)
 			printf("%08x ", l->e[x].style.raw);
 		printf("\n");
 		for (int x = 0; x < l->count; x++)
-			printf("%08x ", l->e[x].g);
+			printf("%06x:%c ", l->e[x].g, l->e[x].g);
 		printf("\n");
 	}
 }

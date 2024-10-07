@@ -29,7 +29,7 @@ sc_draw_store_xy(
 	const sc_glyph_t *g,
 	int x, int y);
 /* static */ int
-_sc_draw_add_store(
+_sc_draw_store_add(
 	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags);

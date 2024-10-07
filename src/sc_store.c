@@ -20,6 +20,8 @@ sc_draw_store_xy(
 	const sc_glyph_t *g,
 	int x, int y)
 {
+	if (x < 0 || y < 0)
+		return NULL;
 	while (s->line.count <= y) {
 		static const sc_line_t zero = {};
 		sc_lines_add(&s->line, zero);
@@ -44,7 +46,7 @@ sc_draw_store_xy(
 }
 
 int
-_sc_draw_add_store(
+_sc_draw_store_add(
 	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags)
@@ -74,16 +76,16 @@ _sc_draw_add_store(
 }
 
 static void
-sc_store_do_csi(
-	sc_t *sc,
+_sc_draw_store_csi(
+	sc_add_context_t *add,
+	sc_draw_t *s,
 	uint8_t c)
 {
-	sc_draw_t *s = &sc->current->draw;
 	switch (c) {
 		case 'A': { // move Y up
 			int cl = 1;
-			if (sc->add.pcount)
-				cl = sc->add.p[0];
+			if (add->pcount)
+				cl = add->p[0];
 			if (s->c_y > cl)
 				s->c_y = 0;
 			else
@@ -91,41 +93,41 @@ sc_store_do_csi(
 		}	break;
 		case 'G': { // Move absolute X
 			int cl = 1;
-			if (sc->add.pcount)
-				cl = sc->add.p[0];
+			if (add->pcount)
+				cl = add->p[0];
 			if (cl) cl--;	// 1 based to zero based
 			s->c_x = cl;
 		}	break;
 		case 'm': {	// style/colors
-			for (int pi = 0; pi < sc->add.pcount; pi++) {
-				//	printf("CSI %d m\n", sc->add.p[pi]);
-				switch (sc->add.p[pi]) {
+			for (int pi = 0; pi < add->pcount; pi++) {
+				//	printf("CSI %d m\n", add->p[pi]);
+				switch (add->p[pi]) {
 					case 0:
 						s->style.raw = 0;
 						break;
 					case 1:
 					case 21:
-						s->style.bold = sc->add.p[pi] < 10;
+						s->style.bold = add->p[pi] < 10;
 						break;
 					case 4:
 					case 24:
-						s->style.under = sc->add.p[pi] < 10;
+						s->style.under = add->p[pi] < 10;
 						break;
 					case 7:
 					case 27:
-						s->style.invert = sc->add.p[pi] < 10;
+						s->style.invert = add->p[pi] < 10;
 						break;
 					case 22:
 						s->style.bold = 0;
 						break;
 					case 30 ... 37:
-						s->style.fore = sc->add.p[pi] - 30;
+						s->style.fore = add->p[pi] - 30;
 						s->style.has_fore = 1;
 						break;
 					case 38: {	// 256 colors
-						if (sc->add.pcount - pi < 3 || sc->add.p[pi + 1] != 5)
+						if (add->pcount - pi < 3 || add->p[pi + 1] != 5)
 							break;
-						s->style.fore = sc->add.p[pi + 2];
+						s->style.fore = add->p[pi + 2];
 						s->style.has_fore = 1;
 						pi += 3;
 					}	break;
@@ -134,13 +136,13 @@ sc_store_do_csi(
 						s->style.has_fore = 0;
 						break;
 					case 40 ... 47:
-						s->style.back = sc->add.p[pi] - 40;
+						s->style.back = add->p[pi] - 40;
 						s->style.has_back = 1;
 						break;
 					case 48: {	// 256 colors
-						if (sc->add.pcount - pi < 3 || sc->add.p[pi + 1] != 5)
+						if (add->pcount - pi < 3 || add->p[pi + 1] != 5)
 							break;
-						s->style.back = sc->add.p[pi + 2];
+						s->style.back = add->p[pi + 2];
 						s->style.has_back = 1;
 						pi += 3;
 					}	break;
@@ -155,67 +157,107 @@ sc_store_do_csi(
 }
 
 static void
-sc_store_do_esc(
-	sc_t *sc,
+_sc_draw_store_esc(
+	sc_add_context_t *add,
+	sc_draw_t *s,
 	uint8_t c)
 {
 	switch (c) {
 		case 'c': // reset all
-			sc_win_clear(sc->current);
+			sc_draw_clear(s);
 			break;
 	}
 }
 
 static void
-sc_store_param_digit(
-	sc_t *sc,
+_sc_draw_store_param_digit(
+	sc_add_context_t *add,
 	uint8_t c)
 {
-	if (!sc->add.pcount) {
-		sc->add.p[0] = 0;
-		sc->add.pcount = 1;
+	if (!add->pcount) {
+		add->p[0] = 0;
+		add->pcount = 1;
 	}
-	sc->add.p[sc->add.pcount - 1] *= 10;
-	sc->add.p[sc->add.pcount - 1] += c - '0';
+	add->p[add->pcount - 1] *= 10;
+	add->p[add->pcount - 1] += c - '0';
+}
+
+// Copyright (c) 2008-2010 Bjoern Hoehrmann <bjoern@hoehrmann.de>
+// See http://bjoern.hoehrmann.de/utf-8/decoder/dfa/ for details.
+#define UTF8_ACCEPT 0
+#define UTF8_REJECT 12
+
+static inline unsigned int
+stb_ttc__UTF8_Decode(
+		unsigned int* state,
+		unsigned int* codep,
+		unsigned char byte)
+{
+	static const unsigned char utf8d[] = {
+		// The first part of the table maps bytes to character classes that
+		// to reduce the size of the transition table and create bitmasks.
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+		7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+		8,8,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+		10,3,3,3,3,3,3,3,3,3,3,3,3,4,3,3, 11,6,6,6,5,8,8,8,8,8,8,8,8,8,8,8,
+
+		// The second part is a transition table that maps a combination
+		// of a state of the automaton and a character class to a state.
+		0,12,24,36,60,96,84,12,12,12,48,72, 12,12,12,12,12,12,12,12,12,12,12,12,
+		12, 0,12,12,12,12,12, 0,12, 0,12,12, 12,24,12,12,12,12,12,24,12,24,12,12,
+		12,12,12,12,12,12,12,24,12,12,12,12, 12,24,12,12,12,12,12,12,12,24,12,12,
+		12,12,12,12,12,12,12,36,12,36,12,12, 12,36,12,12,12,12,12,36,12,36,12,12,
+		12,36,12,12,12,12,12,12,12,12,12,12,
+	};
+	unsigned int type = utf8d[byte];
+	*codep = (*state != UTF8_ACCEPT) ?
+				(byte & 0x3fu) | (*codep << 6) :
+				(0xff >> type) & (byte);
+	*state = utf8d[256 + *state + type];
+	return *state;
 }
 
 static void
-sc_add_machine(
-	sc_t *sc,
+_sc_draw_store_machine(
+	sc_add_context_t *add,
+	sc_draw_t *s,
 	uint8_t c)
 {
-	sc_draw_t *s = &sc->current->draw;
-	pt_start(sc->add.pt);
+	pt_start(add->pt);
 
 	switch (c) {
 		case 27: {
 			do {
-				pt_yield(sc->add.pt);
+				pt_yield(add->pt);
 				switch (c) {
 					case '[': {
-						sc->add.pcount = 0;
+						add->pcount = 0;
 						do {
-							pt_yield(sc->add.pt);
+							pt_yield(add->pt);
 							switch (c) {
 								case '0' ... '9':
-									sc_store_param_digit(sc, c);
+									_sc_draw_store_param_digit(add, c);
 									break;
 								case ';':
-									sc->add.pcount++;
-									sc->add.p[sc->add.pcount - 1] = 0;
+									add->pcount++;
+									add->p[add->pcount - 1] = 0;
 									break;
 								default:
-									sc_store_do_csi(sc, c);
-									pt_end(sc->add.pt);	// restart machine
+									_sc_draw_store_csi(add, s, c);
+									pt_finish(add->pt);	// restart machine
 							}
 						} while (1);
 					}	break;
 					case '0' ... '9':
-						sc_store_param_digit(sc, c);
+						_sc_draw_store_param_digit(add, c);
 						break;
 					default:
-						sc_store_do_esc(sc, c);
-						pt_end(sc->add.pt);	// restart machine
+						_sc_draw_store_esc(add, s, c);
+						pt_finish(add->pt);	// restart machine
 				}
 			} while (1);
 		}	break;
@@ -235,17 +277,28 @@ sc_add_machine(
 				s->c_y++;
 		}	break;
 		default:
-#if 0	// later
-			if (c & 0x80) {
-				sc->add.utf8 = 0;
-				sc->add.utf8_count = 0;
-
-			} else
-#endif
-			if (_sc_draw_add_store(s, c, 0))
-				sc_win_dirty(sc->current);
+			if (stb_ttc__UTF8_Decode(&add->utf8_state, &add->utf8_glyph, c) == UTF8_ACCEPT)
+				_sc_draw_store_add(s, add->utf8_glyph, 0);
 	}
-	pt_end(sc->add.pt);
+	pt_end(add->pt);
+}
+
+//! like sc_add but using a add context and a sc_draw ('add' is optional)
+int
+sc_draw_add(
+	sc_add_context_t *add,
+	sc_draw_t *s,
+	const char *what,
+	unsigned int l)
+{
+	if (!what || !*what)
+		return 0;
+	if (!l) l = strlen(what);
+	sc_add_context_t z = {};
+	if (!add) add = &z;
+	for (int ci = 0; ci < l; ci++)
+		_sc_draw_store_machine(add, s, what[ci]);
+	return l;
 }
 
 int
@@ -258,9 +311,9 @@ sc_add(
 		return 0;
 	if (!l) l = strlen(what);
 	SC_GET(sc);
-
-	for (int ci = 0; ci < l; ci++)
-		sc_add_machine(sc, what[ci]);
+	sc_draw_add(&sc->add, &sc->current->draw, what, l);
+	if (sc->current->draw.dirty)
+		sc_win_dirty(sc->current);
 	return l;
 }
 
@@ -270,12 +323,13 @@ sc_printf(
 	const char *f,
 	...)
 {
+	SC_GET(sc);
 	va_list ap;
-	sc_buf_t b = {};
 	va_start(ap, f);
-	int res = sc_buf_vprintf(&b, f, ap);
+	int res = sc_draw_vprintf(&sc->add,
+					&sc->current->draw, f, ap);
 	va_end(ap);
-	res = sc_add(sc, (char*)b.e, b.count);
-	sc_buf_free(&b);
+	if (sc->current->draw.dirty)
+		sc_win_dirty(sc->current);
 	return res;
 }

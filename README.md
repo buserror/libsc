@@ -18,14 +18,16 @@ The static/dyn libraries are probably better for debugging, and for full install
 * "Update" current version on screen, ie move cursor back and redisplay
 * Single key input, with timeout
 * (sub) Window text justification
+* Tested in various terminals, like xterm, tilix etc. Mileage may vary!
 
 ## TODO:
 * 'diff' one output with the previous one
 * UTF8 input
-* vt100 RGB support?
-* Add some sort of *table* and *column* support
+* vt100 full RGB support?
+* Add some sort of *table* and *column* support.
 
 ## Notes:
+* The library doesn't even try to look wether your terminal supports UTF8, etc. I just assumes it does.
 * You need *tcc* (Fabrice Bellard tiny C runtime) to build sc.h. If you don't know about *tcc*, you should!
 
 ![sc_cpu](doc/sc_cpu.gif)

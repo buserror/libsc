@@ -8,7 +8,7 @@ SHELL			= /bin/bash
 TARGET			= libsc
 DESC			= C terminal display tool
 SOV			?= 1
-#O 			= .
+O 			?= .
 # Auto load all the .c files dependencies, and object files
 LIBSRC			:= ${notdir ${wildcard src/*.c}}
 
@@ -54,6 +54,7 @@ TESTS_SRC	= ${wildcard tests/*.c}
 TESTS_DST	:= ${patsubst %, ${OBJ}/%, ${notdir ${TESTS_SRC:.c=}}}
 TESTS_DST_DBG	:= ${patsubst %, ${OBJ}/%, ${notdir ${TESTS_SRC:.c=_d}}}
 
+tests			: | sc.h
 tests			: $(TESTS_DST)
 debug			: $(TESTS_DST_DBG)
 
@@ -66,3 +67,11 @@ ${OBJ}/%_d	: tests/%.c sc.h | all
 		-Wl,-rpath,${shell readlink -f ${LIB}} \
 		-lsc
 
+DESTDIR		?= /usr/local
+
+install		:	sc.h
+	install sc.h $(DESTDIR)/include/ && \
+	install $(LIB)/$(TARGET){.a,.so.$(SOV)} $(DESTDIR)/lib/
+
+deb:
+	echo Nothing to be done

@@ -24,8 +24,8 @@ sc_new(
 
 	struct winsize w;
 	ioctl(0, TIOCGWINSZ, &w);
-	s->w = w.ws_col;
-	s->h = w.ws_row;
+	s->draw.w = w.ws_col;
+	s->draw.h = w.ws_row;
 	if (!g_sc) g_sc = sc;
 	return sc;
 }

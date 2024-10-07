@@ -11,6 +11,7 @@
 #define __SC_H__
 
 #include <stdint.h>
+#include <string.h>
 #include <sys/queue.h>
 // #include "c_array.h"
 #ifndef __C_ARRAY_H___
@@ -81,7 +82,8 @@ C_ARRAY_DECL C_ARRAY_INLINE \
 {\
 	if (!a || a->size == size) return; \
 	if (size == 0) { if (a->e) free(a->e); a->e = NULL; } \
-	else a->e = realloc(a->e, size * sizeof(__name##_element_t));\
+	else a->e = (__name##_element_t*)realloc(a->e, \
+						size * sizeof(__name##_element_t));\
 	a->size = size; \
 }\
 C_ARRAY_DECL C_ARRAY_INLINE \
@@ -128,9 +130,9 @@ C_ARRAY_DECL C_ARRAY_INLINE \
 C_ARRAY_DECL C_ARRAY_INLINE \
 	__name##_count_t __name##_insert(\
 			__name##_p a, __name##_count_t index, \
-			__name##_element_t * e, __name##_count_t count) \
+			const __name##_element_t * e, __name##_count_t count) \
 {\
-	if (!a) return 0;\
+	if (!a || !e || !count) return 0;\
 	if (index > a->count) index = a->count;\
 	if (a->count + count >= a->size) \
 		__name##_realloc(a, (((a->count + count) / __name##_page_size)+1) * __name##_page_size);\
@@ -140,6 +142,14 @@ C_ARRAY_DECL C_ARRAY_INLINE \
 	memmove(&a->e[index], e, count * sizeof(__name##_element_t));\
 	a->count += count;\
 	return a->count;\
+}\
+C_ARRAY_DECL C_ARRAY_INLINE \
+	__name##_count_t __name##_append(\
+			__name##_p a, \
+			const __name##_element_t * e, __name##_count_t count) \
+{\
+	if (!a) return 0;\
+	return __name##_insert(a, a->count, e, count);\
 }\
 C_ARRAY_DECL C_ARRAY_INLINE \
 	__name##_count_t __name##_delete(\
@@ -170,9 +180,9 @@ enum {
 
 typedef union sc_style_t {
 	struct {
-		uint32_t fore : 8, back : 8,
-				has_fore : 1, has_back : 1,
-				bold : 1, under : 1, invert : 1;
+		uint32_t 	fore : 8, back : 8,
+					has_fore : 1, has_back : 1,
+					bold : 1, under : 1, invert : 1;
 	};
 	uint32_t 	raw;
 } sc_style_t;
@@ -211,9 +221,12 @@ typedef struct sc_draw_t {
 								kind : 8,	// for custom windows/boxes
 								draw_style : 4;	// for draw_cb
 	uint8_t 					c_x, c_y;	// current cursor position
+	uint8_t 					w, h;		// size
 	sc_style_t 					style; 		// current style
 	sc_lines_t 					line;
 } sc_draw_t;
+
+DECLARE_C_ARRAY(sc_draw_t, sc_draw_array, 2);
 
 typedef struct sc_win_t {
 	sc_draw_t					draw;
@@ -222,7 +235,7 @@ typedef struct sc_win_t {
 	TAILQ_HEAD(sub,sc_win_t)	sub;
 	sc_win_driver_t const *		driver;
 	TAILQ_ENTRY(sc_win_t)		self;
-	uint8_t 					x,y,w,h;	// position in parent window, size
+	uint8_t 					x, y;		// position in parent window
 } sc_win_t;
 
 // #include "sc_buf.h"
@@ -256,63 +269,90 @@ enum {
 	SC_REDRAW		= (1 << 2),		// supports redrawing same lines
 };
 
+typedef struct sc_add_context_t {
+	void *						pt;
+	unsigned int 				pcount;	// parameter count (+1)
+	unsigned int 				p[16];
+	unsigned int 				utf8_state;
+	uint32_t 					utf8_glyph;
+} sc_add_context_t;
+
+typedef struct sc_render_context_t {
+	void *						pt;
+	unsigned int 				space_count;	// space count
+	sc_style_t					style, old_style; // detect style change boundary
+	unsigned int				style_count;
+	unsigned int				style_insert;	// insert offset for the style sequence
+} sc_render_context_t;
+
 typedef struct sc_t {
 	uint32_t					flags;
 	sc_win_t 					screen; // main rendering window
 	sc_win_t *					current;
 	sc_buf_t					output;	// last generated output
-	struct {
-		void *			pt;
-		unsigned int 	pcount;	// parameter count (+1)
-		unsigned int 	p[16];
-		unsigned int 	utf8_count;
-		uint32_t 		utf8;
-	} 				add;
-	struct {
-		void *			pt;
-		unsigned int 	space_count;	// space count
-		sc_style_t		style, old_style; // detect style change boundary
-		unsigned int	style_count;
-		unsigned int	style_insert;	// insert offset for the style sequence
-	} 				render;
+	sc_add_context_t			add;	// add context
+	sc_render_context_t			render;	// render context
 } sc_t;
 
 /* Create a new sc instance. This is recommended before you do anything,
  * but it is currently mostly optional as one will get created anyway */
 sc_t *
 sc_new(
-	uint32_t flags);
+		uint32_t flags);
 
 void
 sc_dispose(
-	sc_t * sc);
+		sc_t * sc);
 /* Move cursor to x, y in 'current window' in sc */
 void
 sc_goto(
-		sc_t *sc, int x, int y);
+		sc_t *sc,
+		int x, int y);
 /* Non-blocking get character from console, return 0, or 1+characters sequence */
 unsigned int
 sc_getch(
-	sc_t * sc,
-	unsigned int timeout_ms);
+		sc_t * sc,
+		unsigned int timeout_ms);
 
 // #include "sc_draw.h"
+//! Clear context and contents and reset cursor to 0,0
 void
 sc_draw_clear(
 		struct sc_draw_t * s);
-
+//! Mark the context as dirty, ie, needs to be redrawn
 void
 sc_draw_dirty(
 		struct sc_draw_t * s);
-
+//! Set the cursor position in the context (does not allocate lines)
 void
 sc_draw_goto(
 		struct sc_draw_t *s,
 		int x, int y);
-
+//! Disposes of all the lines in the draw context
 void
 sc_draw_dispose(
 		struct sc_draw_t *s);
+//! like sc_add but using a add context and a sc_draw ('add' is optional)
+int
+sc_draw_add(
+	struct sc_add_context_t *add,
+	struct sc_draw_t *s,
+	const char *what,
+	unsigned int l);
+//! Same as printf with a va_list argument ('add' is optional)
+int
+sc_draw_vprintf(
+	struct sc_add_context_t *add,
+	struct sc_draw_t *s,
+	const char *f,
+	va_list ap);
+//! printf in the draw context at the current x,y position ('add' is optional)
+int
+sc_draw_printf(
+	struct sc_add_context_t *add,
+	struct sc_draw_t *s,
+	const char *f,
+	...);
 // #include "sc_store.h"
 int
 sc_add(
@@ -335,7 +375,7 @@ sc_draw_store_xy(
 	const sc_glyph_t *g,
 	int x, int y);
 /* static */ int
-_sc_draw_add_store(
+_sc_draw_store_add(
 	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags);
@@ -384,6 +424,12 @@ void
 sc_win_goto(
 	sc_win_t *s,
 	int x, int y);
+/* Call sc_add with the printf-equivalent string */
+int
+sc_win_printf(
+	sc_win_t *s,
+	const char *f,
+	...);
 
 /* static */ sc_win_t *
 _sc_win_init(
@@ -431,6 +477,7 @@ extern sc_t * g_sc;	// in sc_base.c
 IMPLEMENT_C_ARRAY(sc_line);
 IMPLEMENT_C_ARRAY(sc_lines);
 IMPLEMENT_C_ARRAY(sc_buf);
+IMPLEMENT_C_ARRAY(sc_draw_array);
 
 #endif
 
@@ -455,17 +502,26 @@ IMPLEMENT_C_ARRAY(sc_buf);
  * storing the address of a 'local variable' (which is the label!) */
 static inline void _set_gcc_ptr_workaround(void **d, void *s) {
 #pragma GCC diagnostic push
+#if __GNUC__ >= 12
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
 	*d = s;
 #pragma GCC diagnostic pop
 }
 #define pt_start(_pt) do { \
 		if (_pt) goto *_pt; \
 	} while (0);
-#define pt_end(_pt) do { _pt = NULL; return; } while(0);
+#define pt_end(_pt) do { \
+		(_pt) = NULL; \
+		_pt_exit: ; \
+	} while(0);
+#define pt_finish(_pt) do { \
+		(_pt) = NULL; \
+		goto _pt_exit;\
+	} while(0);
 #define pt_yield(_pt) do { \
-		_set_gcc_ptr_workaround(&_pt, &&_CONCAT(_label, __LINE__));\
-		return;\
+		_set_gcc_ptr_workaround(&(_pt), &&_CONCAT(_label, __LINE__));\
+		goto _pt_exit;\
 		_CONCAT(_label, __LINE__): ; \
 	} while (0);
 
@@ -492,7 +548,7 @@ struct pt_t {
 	} while (0);
 #define pt_end(_pt) do { (_pt)->st[(_pt)->sp] = NULL; return; } while(0);
 #define pt_yield(_pt) do { \
-		(_pt)->st[(_pt)->sp] = &&_CONCAT(_label, __LINE__);\
+		_set_gcc_ptr_workaround(&(_pt)->st[(_pt)->sp], &&_CONCAT(_label, __LINE__));\
 		return;\
 		_CONCAT(_label, __LINE__): ; \
 	} while (0);
@@ -620,6 +676,8 @@ sc_draw_store_xy(
 	const sc_glyph_t *g,
 	int x, int y)
 {
+	if (x < 0 || y < 0)
+		return NULL;
 	while (s->line.count <= y) {
 		static const sc_line_t zero = {};
 		sc_lines_add(&s->line, zero);
@@ -644,7 +702,7 @@ sc_draw_store_xy(
 }
 
 int
-_sc_draw_add_store(
+_sc_draw_store_add(
 	sc_draw_t *s,
 	uint32_t c,
 	uint8_t flags)
@@ -674,16 +732,16 @@ _sc_draw_add_store(
 }
 
 static void
-sc_store_do_csi(
-	sc_t *sc,
+_sc_draw_store_csi(
+	sc_add_context_t *add,
+	sc_draw_t *s,
 	uint8_t c)
 {
-	sc_draw_t *s = &sc->current->draw;
 	switch (c) {
 		case 'A': { // move Y up
 			int cl = 1;
-			if (sc->add.pcount)
-				cl = sc->add.p[0];
+			if (add->pcount)
+				cl = add->p[0];
 			if (s->c_y > cl)
 				s->c_y = 0;
 			else
@@ -691,41 +749,41 @@ sc_store_do_csi(
 		}	break;
 		case 'G': { // Move absolute X
 			int cl = 1;
-			if (sc->add.pcount)
-				cl = sc->add.p[0];
+			if (add->pcount)
+				cl = add->p[0];
 			if (cl) cl--;	// 1 based to zero based
 			s->c_x = cl;
 		}	break;
 		case 'm': {	// style/colors
-			for (int pi = 0; pi < sc->add.pcount; pi++) {
-				//	printf("CSI %d m\n", sc->add.p[pi]);
-				switch (sc->add.p[pi]) {
+			for (int pi = 0; pi < add->pcount; pi++) {
+				//	printf("CSI %d m\n", add->p[pi]);
+				switch (add->p[pi]) {
 					case 0:
 						s->style.raw = 0;
 						break;
 					case 1:
 					case 21:
-						s->style.bold = sc->add.p[pi] < 10;
+						s->style.bold = add->p[pi] < 10;
 						break;
 					case 4:
 					case 24:
-						s->style.under = sc->add.p[pi] < 10;
+						s->style.under = add->p[pi] < 10;
 						break;
 					case 7:
 					case 27:
-						s->style.invert = sc->add.p[pi] < 10;
+						s->style.invert = add->p[pi] < 10;
 						break;
 					case 22:
 						s->style.bold = 0;
 						break;
 					case 30 ... 37:
-						s->style.fore = sc->add.p[pi] - 30;
+						s->style.fore = add->p[pi] - 30;
 						s->style.has_fore = 1;
 						break;
 					case 38: {	// 256 colors
-						if (sc->add.pcount - pi < 3 || sc->add.p[pi + 1] != 5)
+						if (add->pcount - pi < 3 || add->p[pi + 1] != 5)
 							break;
-						s->style.fore = sc->add.p[pi + 2];
+						s->style.fore = add->p[pi + 2];
 						s->style.has_fore = 1;
 						pi += 3;
 					}	break;
@@ -734,13 +792,13 @@ sc_store_do_csi(
 						s->style.has_fore = 0;
 						break;
 					case 40 ... 47:
-						s->style.back = sc->add.p[pi] - 40;
+						s->style.back = add->p[pi] - 40;
 						s->style.has_back = 1;
 						break;
 					case 48: {	// 256 colors
-						if (sc->add.pcount - pi < 3 || sc->add.p[pi + 1] != 5)
+						if (add->pcount - pi < 3 || add->p[pi + 1] != 5)
 							break;
-						s->style.back = sc->add.p[pi + 2];
+						s->style.back = add->p[pi + 2];
 						s->style.has_back = 1;
 						pi += 3;
 					}	break;
@@ -755,67 +813,107 @@ sc_store_do_csi(
 }
 
 static void
-sc_store_do_esc(
-	sc_t *sc,
+_sc_draw_store_esc(
+	sc_add_context_t *add,
+	sc_draw_t *s,
 	uint8_t c)
 {
 	switch (c) {
 		case 'c': // reset all
-			sc_win_clear(sc->current);
+			sc_draw_clear(s);
 			break;
 	}
 }
 
 static void
-sc_store_param_digit(
-	sc_t *sc,
+_sc_draw_store_param_digit(
+	sc_add_context_t *add,
 	uint8_t c)
 {
-	if (!sc->add.pcount) {
-		sc->add.p[0] = 0;
-		sc->add.pcount = 1;
+	if (!add->pcount) {
+		add->p[0] = 0;
+		add->pcount = 1;
 	}
-	sc->add.p[sc->add.pcount - 1] *= 10;
-	sc->add.p[sc->add.pcount - 1] += c - '0';
+	add->p[add->pcount - 1] *= 10;
+	add->p[add->pcount - 1] += c - '0';
+}
+
+// Copyright (c) 2008-2010 Bjoern Hoehrmann <bjoern@hoehrmann.de>
+// See http://bjoern.hoehrmann.de/utf-8/decoder/dfa/ for details.
+#define UTF8_ACCEPT 0
+#define UTF8_REJECT 12
+
+static inline unsigned int
+stb_ttc__UTF8_Decode(
+		unsigned int* state,
+		unsigned int* codep,
+		unsigned char byte)
+{
+	static const unsigned char utf8d[] = {
+		// The first part of the table maps bytes to character classes that
+		// to reduce the size of the transition table and create bitmasks.
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+		1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+		7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+		8,8,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+		10,3,3,3,3,3,3,3,3,3,3,3,3,4,3,3, 11,6,6,6,5,8,8,8,8,8,8,8,8,8,8,8,
+
+		// The second part is a transition table that maps a combination
+		// of a state of the automaton and a character class to a state.
+		0,12,24,36,60,96,84,12,12,12,48,72, 12,12,12,12,12,12,12,12,12,12,12,12,
+		12, 0,12,12,12,12,12, 0,12, 0,12,12, 12,24,12,12,12,12,12,24,12,24,12,12,
+		12,12,12,12,12,12,12,24,12,12,12,12, 12,24,12,12,12,12,12,12,12,24,12,12,
+		12,12,12,12,12,12,12,36,12,36,12,12, 12,36,12,12,12,12,12,36,12,36,12,12,
+		12,36,12,12,12,12,12,12,12,12,12,12,
+	};
+	unsigned int type = utf8d[byte];
+	*codep = (*state != UTF8_ACCEPT) ?
+				(byte & 0x3fu) | (*codep << 6) :
+				(0xff >> type) & (byte);
+	*state = utf8d[256 + *state + type];
+	return *state;
 }
 
 static void
-sc_add_machine(
-	sc_t *sc,
+_sc_draw_store_machine(
+	sc_add_context_t *add,
+	sc_draw_t *s,
 	uint8_t c)
 {
-	sc_draw_t *s = &sc->current->draw;
-	pt_start(sc->add.pt);
+	pt_start(add->pt);
 
 	switch (c) {
 		case 27: {
 			do {
-				pt_yield(sc->add.pt);
+				pt_yield(add->pt);
 				switch (c) {
 					case '[': {
-						sc->add.pcount = 0;
+						add->pcount = 0;
 						do {
-							pt_yield(sc->add.pt);
+							pt_yield(add->pt);
 							switch (c) {
 								case '0' ... '9':
-									sc_store_param_digit(sc, c);
+									_sc_draw_store_param_digit(add, c);
 									break;
 								case ';':
-									sc->add.pcount++;
-									sc->add.p[sc->add.pcount - 1] = 0;
+									add->pcount++;
+									add->p[add->pcount - 1] = 0;
 									break;
 								default:
-									sc_store_do_csi(sc, c);
-									pt_end(sc->add.pt);	// restart machine
+									_sc_draw_store_csi(add, s, c);
+									pt_finish(add->pt);	// restart machine
 							}
 						} while (1);
 					}	break;
 					case '0' ... '9':
-						sc_store_param_digit(sc, c);
+						_sc_draw_store_param_digit(add, c);
 						break;
 					default:
-						sc_store_do_esc(sc, c);
-						pt_end(sc->add.pt);	// restart machine
+						_sc_draw_store_esc(add, s, c);
+						pt_finish(add->pt);	// restart machine
 				}
 			} while (1);
 		}	break;
@@ -835,17 +933,28 @@ sc_add_machine(
 				s->c_y++;
 		}	break;
 		default:
-#if 0	// later
-			if (c & 0x80) {
-				sc->add.utf8 = 0;
-				sc->add.utf8_count = 0;
-
-			} else
-#endif
-			if (_sc_draw_add_store(s, c, 0))
-				sc_win_dirty(sc->current);
+			if (stb_ttc__UTF8_Decode(&add->utf8_state, &add->utf8_glyph, c) == UTF8_ACCEPT)
+				_sc_draw_store_add(s, add->utf8_glyph, 0);
 	}
-	pt_end(sc->add.pt);
+	pt_end(add->pt);
+}
+
+//! like sc_add but using a add context and a sc_draw ('add' is optional)
+int
+sc_draw_add(
+	sc_add_context_t *add,
+	sc_draw_t *s,
+	const char *what,
+	unsigned int l)
+{
+	if (!what || !*what)
+		return 0;
+	if (!l) l = strlen(what);
+	sc_add_context_t z = {};
+	if (!add) add = &z;
+	for (int ci = 0; ci < l; ci++)
+		_sc_draw_store_machine(add, s, what[ci]);
+	return l;
 }
 
 int
@@ -858,9 +967,9 @@ sc_add(
 		return 0;
 	if (!l) l = strlen(what);
 	SC_GET(sc);
-
-	for (int ci = 0; ci < l; ci++)
-		sc_add_machine(sc, what[ci]);
+	sc_draw_add(&sc->add, &sc->current->draw, what, l);
+	if (sc->current->draw.dirty)
+		sc_win_dirty(sc->current);
 	return l;
 }
 
@@ -870,16 +979,18 @@ sc_printf(
 	const char *f,
 	...)
 {
+	SC_GET(sc);
 	va_list ap;
-	sc_buf_t b = {};
 	va_start(ap, f);
-	int res = sc_buf_vprintf(&b, f, ap);
+	int res = sc_draw_vprintf(&sc->add,
+					&sc->current->draw, f, ap);
 	va_end(ap);
-	res = sc_add(sc, (char*)b.e, b.count);
-	sc_buf_free(&b);
+	if (sc->current->draw.dirty)
+		sc_win_dirty(sc->current);
 	return res;
 }
 // #include "sc_draw.c"
+
 
 void
 sc_draw_clear(
@@ -918,6 +1029,36 @@ sc_draw_dispose(
 		sc_line_free(&s->line.e[li]);
 	sc_lines_free(&s->line);
 }
+
+int
+sc_draw_vprintf(
+	sc_add_context_t *add,
+	sc_draw_t *s,
+	const char *f,
+	va_list ap)
+{
+	sc_buf_t b = {};
+	int res = sc_buf_vprintf(&b, f, ap);
+	sc_add_context_t z = {};
+	if (!add) add = &z;
+	res = sc_draw_add(add, s, (char*)b.e, b.count);
+	sc_buf_free(&b);
+	return res;
+}
+
+int
+sc_draw_printf(
+	sc_add_context_t *add,
+	sc_draw_t *s,
+	const char *f,
+	...)
+{
+	va_list ap;
+	va_start(ap, f);
+	int res = sc_draw_vprintf(add, s, f, ap);
+	va_end(ap);
+	return res;
+}
 // #include "sc_box.c"
 
 typedef struct sc_box_t {
@@ -949,21 +1090,21 @@ _sc_box_render(
 
 	sc_draw_t * s = &_s->draw;
 	sc_draw_goto(s, x, y);
-	_sc_draw_add_store(s, style->tl, 0);
+	_sc_draw_store_add(s, style->tl, 0);
 	for (int sx = x+1; sx < (x + w - 1); sx++)
-		_sc_draw_add_store(s, style->h, 0);
-	_sc_draw_add_store(s, style->tr, 0);
+		_sc_draw_store_add(s, style->h, 0);
+	_sc_draw_store_add(s, style->tr, 0);
 	sc_draw_goto(s, x, y + h-1);
-	_sc_draw_add_store(s, style->bl, 0);
+	_sc_draw_store_add(s, style->bl, 0);
 	for (int sx = x+1; sx < (x + w - 1); sx++)
-		_sc_draw_add_store(s, style->h, 0);
-	_sc_draw_add_store(s, style->br, 0);
+		_sc_draw_store_add(s, style->h, 0);
+	_sc_draw_store_add(s, style->br, 0);
 
 	for (int sy = y + 1; sy < (y + h - 1); sy++) {
 		sc_draw_goto(s, x, sy);
-		_sc_draw_add_store(s, style->v, 0);
+		_sc_draw_store_add(s, style->v, 0);
 		sc_draw_goto(s, x + w - 1, sy);
-		_sc_draw_add_store(s, style->v, 0);
+		_sc_draw_store_add(s, style->v, 0);
 	}
 	sc_win_dirty(_s);
 	return 0;
@@ -974,7 +1115,8 @@ _sc_box_render_cb(
 	sc_win_t *s)
 {
 	sc_box_t * box = (sc_box_t*)s;
-	_sc_box_render(s, &sc_box_style[s->draw.draw_style], 0, 0, s->w, s->h);
+	_sc_box_render(s, &sc_box_style[s->draw.draw_style], 
+			0, 0, s->draw.w, s->draw.h);
 	if (box->title) {
 		sc_win_t *save = s->sc->current;
 		sc_win_set(s->sc, s);
@@ -1014,13 +1156,13 @@ sc_box(
 		parent = sc->current = &sc->screen;
 
 	sc_win_t *s = sc_win_new(sc, parent, sizeof(sc_box_t));
-	s->x = x; s->y = y; s->w = w; s->h = h;
+	s->x = x; s->y = y; s->draw.w = w; s->draw.h = h;
 	s->driver = &_driver;
 	s->draw.draw_style = flags;
 	s->draw.kind = SC_BOX_PLAIN;
 
 	sc_win_t *sub = sc_win_new(sc, s, 0);
-	sub->x = 1; sub->y = 1; sub->w = w - 2; sub->h = h - 2;
+	sub->x = 1; sub->y = 1; sub->draw.w = w - 2; sub->draw.h = h - 2;
 	sc->current = sub;
 
 	return sub;
@@ -1074,15 +1216,84 @@ _sc_render_utf8_glyph(
 	return (char*)cur;
 }
 
+/*
+ * render a draw 's' into the parent 'd' at x,y
+ * this is the 'blitter' really
+ */
+static void
+_sc_draw_render(
+	sc_draw_t *dst,
+	sc_draw_t *src,
+	int dst_x, int dst_y )
+{
+	for (int y = 0; y < src->h; y++) {
+		int dy = dst_y + y;
+		if (dy < 0 || dy >= dst->h)
+			continue;
+		if (y < src->line.count) {	// non-empty line
+			sc_line_t * l = &src->line.e[y];
+			int dx = dst_x, sx = 0;
+			#if 0
+			int leading = 0;// count leading spaces, for center/right justify
+			for (int i = 0; i < l->count; i++)
+				if (l->e[i].g == 0 || l->e[i].g == ' ')
+					leading++;
+			#endif
+			switch (src->justify) {
+				case SC_WIN_JUSTIFY_CENTER:
+					if (l->count > src->w)
+						sx = (l->count - src->w) / 2;
+					else
+						dx += (src->w - l->count) / 2;
+					break;
+				case SC_WIN_JUSTIFY_RIGHT:
+					if (l->count > src->w)
+						sx = l->count - src->w;
+					else
+						dx += src->w - l->count;
+					break;
+				case SC_WIN_JUSTIFY_LEFT:
+				default:
+					break;
+			}
+			for (; dx < (dst_x + src->w) && sx < l->count; sx++, dx++) {
+				if ((dx >= 0 && dx < dst->w)) {
+					sc_draw_store_xy(dst, &l->e[sx], dx, dy);
+				}
+			}
+			for (; dx < (dst_x + src->w); dx++) {
+				if ((dx >= 0 && dx < dst->w)) {
+					sc_draw_store_xy(dst, NULL, dx, dy);
+				}
+			}
+		} else {	// empty line, clear it.
+			for (int x = 0; x < src->w; x++) {
+				int dx = dst_x + x;
+				if ((dx >= 0 && dx < dst->w)) {
+					sc_draw_store_xy(dst, NULL, dx, dy);
+				}
+			}
+		}
+	}
+}
+
 static void
 _sc_render_subs(
 	sc_win_t *s,
 	int force)
 {
+	sc_win_t *sb;
+	if (!s->draw.dirty) {
+		TAILQ_FOREACH_REVERSE(sb, &s->sub, sub, self) {
+			if (sb->draw.dirty) {
+				s->draw.dirty = 1;
+				break;
+			}
+		}
+	}
 	if (!s->draw.dirty)
 		return;
 	s->draw.dirty = 0;
-	sc_win_t *sb;
 	TAILQ_FOREACH_REVERSE(sb, &s->sub, sub, self) {
 		_sc_render_subs(sb, 0);
 	}
@@ -1091,57 +1302,7 @@ _sc_render_subs(
 	if (s->driver && s->driver->draw)
 		s->driver->draw(s);
 
-	sc_draw_t *d = &s->draw;
-	for (int y = 0; y < s->h; y++) {
-		int dy = s->y + y;
-		if (dy < 0 || dy >= s->parent->h)
-			continue;
-		if (y < d->line.count) {	// non-empty line
-			sc_line_t * l = &d->line.e[y];
-			int dx = s->x, sx = 0;
-			#if 0
-			int leading = 0;// count leading spaces, for center/right justify
-			for (int i = 0; i < l->count; i++)
-				if (l->e[i].g == 0 || l->e[i].g == ' ')
-					leading++;
-			#endif
-			switch (d->justify) {
-				case SC_WIN_JUSTIFY_CENTER:
-					if (l->count > s->w)
-						sx = (l->count - s->w) / 2;
-					else
-						dx = (s->w - l->count) / 2;
-					break;
-				case SC_WIN_JUSTIFY_RIGHT:
-					if (l->count > s->w)
-						sx = l->count - s->w;
-					else
-						dx = 1 + s->w - l->count;
-					break;
-				case SC_WIN_JUSTIFY_LEFT:
-				default:
-					break;
-			}
-
-			for (; dx < (s->x + s->w) && sx < l->count; sx++, dx++) {
-				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_draw_store_xy(&s->parent->draw, &l->e[sx], dx, dy);
-				}
-			}
-			for (; dx < (s->x + s->w); dx++) {
-				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
-				}
-			}
-		} else {	// empty line, clear it.
-			for (int x = 0; x < s->w; x++) {
-				int dx = s->x + x;
-				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
-				}
-			}
-		}
-	}
+	_sc_draw_render(&s->parent->draw, &s->draw, s->x, s->y);
 }
 
 static void
@@ -1272,7 +1433,10 @@ _sc_render_line(
 	sc_buf_t * o,
 	sc_line_t *l )
 {
-	if (l->count) sc_buf_concat(o, (uint8_t*)"\033[K", 0);	// CLREOL
+	sc_buf_concat(o, (uint8_t*)"\033[0m", 0);	// CLREOL
+	if (l->count) {
+		sc_buf_concat(o, (uint8_t*)"\033[K", 0);	// CLREOL
+	}
 	sc->render.pt = NULL;
 	sc->render.style.raw = 0;
 	sc->render.style_count = 0;
@@ -1414,19 +1578,33 @@ sc_win_goto(
 	sc_draw_goto(&s->draw, x, y);
 }
 
+int
+sc_win_printf(
+	sc_win_t *s,
+	const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	int r = sc_draw_vprintf(&s->sc->add, &s->draw, fmt, ap);
+	va_end(ap);
+	if (s->draw.dirty)
+		sc_win_dirty(s);
+	return r;
+}
 
 //#ifdef DEBUG
 void
 sc_draw_dump(
 		sc_draw_t *s)
 {
+	printf("%s %d lines. dirty:%d\n", __func__, s->line.count, s->dirty);
 	for (int y = 0; y < s->line.count; y++) {
 		sc_line_t * l = &s->line.e[y];
 		for (int x = 0; x < l->count; x++)
 			printf("%08x ", l->e[x].style.raw);
 		printf("\n");
 		for (int x = 0; x < l->count; x++)
-			printf("%08x ", l->e[x].g);
+			printf("%06x:%c ", l->e[x].g, l->e[x].g);
 		printf("\n");
 	}
 }
@@ -1448,8 +1626,8 @@ sc_new(
 
 	struct winsize w;
 	ioctl(0, TIOCGWINSZ, &w);
-	s->w = w.ws_col;
-	s->h = w.ws_row;
+	s->draw.w = w.ws_col;
+	s->draw.h = w.ws_row;
 	if (!g_sc) g_sc = sc;
 	return sc;
 }

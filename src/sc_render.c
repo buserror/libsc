@@ -38,15 +38,84 @@ _sc_render_utf8_glyph(
 	return (char*)cur;
 }
 
+/*
+ * render a draw 's' into the parent 'd' at x,y
+ * this is the 'blitter' really
+ */
+static void
+_sc_draw_render(
+	sc_draw_t *dst,
+	sc_draw_t *src,
+	int dst_x, int dst_y )
+{
+	for (int y = 0; y < src->h; y++) {
+		int dy = dst_y + y;
+		if (dy < 0 || dy >= dst->h)
+			continue;
+		if (y < src->line.count) {	// non-empty line
+			sc_line_t * l = &src->line.e[y];
+			int dx = dst_x, sx = 0;
+			#if 0
+			int leading = 0;// count leading spaces, for center/right justify
+			for (int i = 0; i < l->count; i++)
+				if (l->e[i].g == 0 || l->e[i].g == ' ')
+					leading++;
+			#endif
+			switch (src->justify) {
+				case SC_WIN_JUSTIFY_CENTER:
+					if (l->count > src->w)
+						sx = (l->count - src->w) / 2;
+					else
+						dx += (src->w - l->count) / 2;
+					break;
+				case SC_WIN_JUSTIFY_RIGHT:
+					if (l->count > src->w)
+						sx = l->count - src->w;
+					else
+						dx += src->w - l->count;
+					break;
+				case SC_WIN_JUSTIFY_LEFT:
+				default:
+					break;
+			}
+			for (; dx < (dst_x + src->w) && sx < l->count; sx++, dx++) {
+				if ((dx >= 0 && dx < dst->w)) {
+					sc_draw_store_xy(dst, &l->e[sx], dx, dy);
+				}
+			}
+			for (; dx < (dst_x + src->w); dx++) {
+				if ((dx >= 0 && dx < dst->w)) {
+					sc_draw_store_xy(dst, NULL, dx, dy);
+				}
+			}
+		} else {	// empty line, clear it.
+			for (int x = 0; x < src->w; x++) {
+				int dx = dst_x + x;
+				if ((dx >= 0 && dx < dst->w)) {
+					sc_draw_store_xy(dst, NULL, dx, dy);
+				}
+			}
+		}
+	}
+}
+
 static void
 _sc_render_subs(
 	sc_win_t *s,
 	int force)
 {
+	sc_win_t *sb;
+	if (!s->draw.dirty) {
+		TAILQ_FOREACH_REVERSE(sb, &s->sub, sub, self) {
+			if (sb->draw.dirty) {
+				s->draw.dirty = 1;
+				break;
+			}
+		}
+	}
 	if (!s->draw.dirty)
 		return;
 	s->draw.dirty = 0;
-	sc_win_t *sb;
 	TAILQ_FOREACH_REVERSE(sb, &s->sub, sub, self) {
 		_sc_render_subs(sb, 0);
 	}
@@ -55,57 +124,7 @@ _sc_render_subs(
 	if (s->driver && s->driver->draw)
 		s->driver->draw(s);
 
-	sc_draw_t *d = &s->draw;
-	for (int y = 0; y < s->h; y++) {
-		int dy = s->y + y;
-		if (dy < 0 || dy >= s->parent->h)
-			continue;
-		if (y < d->line.count) {	// non-empty line
-			sc_line_t * l = &d->line.e[y];
-			int dx = s->x, sx = 0;
-			#if 0
-			int leading = 0;// count leading spaces, for center/right justify
-			for (int i = 0; i < l->count; i++)
-				if (l->e[i].g == 0 || l->e[i].g == ' ')
-					leading++;
-			#endif
-			switch (d->justify) {
-				case SC_WIN_JUSTIFY_CENTER:
-					if (l->count > s->w)
-						sx = (l->count - s->w) / 2;
-					else
-						dx = (s->w - l->count) / 2;
-					break;
-				case SC_WIN_JUSTIFY_RIGHT:
-					if (l->count > s->w)
-						sx = l->count - s->w;
-					else
-						dx = 1 + s->w - l->count;
-					break;
-				case SC_WIN_JUSTIFY_LEFT:
-				default:
-					break;
-			}
-
-			for (; dx < (s->x + s->w) && sx < l->count; sx++, dx++) {
-				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_draw_store_xy(&s->parent->draw, &l->e[sx], dx, dy);
-				}
-			}
-			for (; dx < (s->x + s->w); dx++) {
-				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
-				}
-			}
-		} else {	// empty line, clear it.
-			for (int x = 0; x < s->w; x++) {
-				int dx = s->x + x;
-				if ((dx >= 0 && dx < s->parent->w)) {
-					sc_draw_store_xy(&s->parent->draw, NULL, dx, dy);
-				}
-			}
-		}
-	}
+	_sc_draw_render(&s->parent->draw, &s->draw, s->x, s->y);
 }
 
 static void
@@ -236,7 +255,10 @@ _sc_render_line(
 	sc_buf_t * o,
 	sc_line_t *l )
 {
-	if (l->count) sc_buf_concat(o, (uint8_t*)"\033[K", 0);	// CLREOL
+	sc_buf_concat(o, (uint8_t*)"\033[0m", 0);	// CLREOL
+	if (l->count) {
+		sc_buf_concat(o, (uint8_t*)"\033[K", 0);	// CLREOL
+	}
 	sc->render.pt = NULL;
 	sc->render.style.raw = 0;
 	sc->render.style_count = 0;
